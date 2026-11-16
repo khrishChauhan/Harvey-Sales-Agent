@@ -22,6 +22,9 @@ from sellbird.models.company import Company
 from sellbird.models.prospect import Prospect
 from sellbird.models.campaign import Campaign, EmailStep  # noqa: F401 (EmailStep re-exported)
 from sellbird.models.conversation import Conversation, Message  # noqa: F401
+from sellbird.models.business import BusinessProfile
+from sellbird.models.product import Product
+from sellbird.models.icp import ICP
 
 from sellbird.paths import PROJECT_ROOT
 from sellbird.startups import parse_funding
@@ -577,6 +580,70 @@ MIGRATIONS: list[str] = [
     CREATE INDEX IF NOT EXISTS idx_local_inference_created ON local_inference_logs(created_at);
     CREATE INDEX IF NOT EXISTS idx_local_inference_model ON local_inference_logs(model);
     """,
+    # ── v18: multi-product sales architecture ──
+    """
+    CREATE TABLE IF NOT EXISTS businesses (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        description TEXT DEFAULT '',
+        website TEXT DEFAULT '',
+        industry TEXT DEFAULT '',
+        company_size TEXT DEFAULT '',
+        business_location TEXT DEFAULT '',
+        target_markets TEXT DEFAULT '[]',
+        brand_voice TEXT DEFAULT '',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS products (
+        id TEXT PRIMARY KEY,
+        business_id TEXT NOT NULL REFERENCES businesses(id),
+        name TEXT NOT NULL,
+        description TEXT DEFAULT '',
+        category TEXT DEFAULT '',
+        pricing TEXT DEFAULT '',
+        key_features TEXT DEFAULT '[]',
+        key_benefits TEXT DEFAULT '[]',
+        unique_selling_points TEXT DEFAULT '[]',
+        target_industries TEXT DEFAULT '[]',
+        objection_responses TEXT DEFAULT '{}',
+        offer TEXT DEFAULT '{}',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_products_business ON products(business_id);
+
+    CREATE TABLE IF NOT EXISTS icps (
+        id TEXT PRIMARY KEY,
+        product_id TEXT NOT NULL REFERENCES products(id),
+        name TEXT NOT NULL,
+        description TEXT DEFAULT '',
+        target_industries TEXT DEFAULT '[]',
+        company_sizes TEXT DEFAULT '[]',
+        target_geographies TEXT DEFAULT '[]',
+        job_titles TEXT DEFAULT '[]',
+        buyer_personas TEXT DEFAULT '[]',
+        pain_points TEXT DEFAULT '[]',
+        buying_signals TEXT DEFAULT '[]',
+        qualification_criteria TEXT DEFAULT '[]',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_icps_product ON icps(product_id);
+
+    ALTER TABLE prospects ADD COLUMN product_id TEXT DEFAULT '';
+    ALTER TABLE campaigns ADD COLUMN product_id TEXT DEFAULT '';
+    ALTER TABLE conversations ADD COLUMN product_id TEXT DEFAULT '';
+    ALTER TABLE observations ADD COLUMN product_id TEXT DEFAULT '';
+    ALTER TABLE outbox ADD COLUMN product_id TEXT DEFAULT '';
+
+    CREATE INDEX IF NOT EXISTS idx_prospects_product ON prospects(product_id);
+    CREATE INDEX IF NOT EXISTS idx_campaigns_product ON campaigns(product_id);
+    CREATE INDEX IF NOT EXISTS idx_conversations_product ON conversations(product_id);
+    CREATE INDEX IF NOT EXISTS idx_observations_product ON observations(product_id);
+    CREATE INDEX IF NOT EXISTS idx_outbox_product ON outbox(product_id);
+    """,
 ]
 
 BRAIN_PROVIDERS = ("ollama", "claude", "codex")
@@ -597,11 +664,11 @@ _LAST_PROFILED = (
 
 # Column whitelists for dynamic UPDATEs (prevents SQL injection via kwargs).
 _CAMPAIGN_COLUMNS = frozenset({
-    "name", "channel", "instantly_campaign_id",
+    "product_id", "name", "channel", "instantly_campaign_id",
     "sequence_json", "prospect_ids_json", "status",
 })
 _CONVERSATION_COLUMNS = frozenset({
-    "prospect_id", "campaign_id", "channel",
+    "product_id", "prospect_id", "campaign_id", "channel",
     "thread_json", "intent", "stage", "status", "mailbox_id",
 })
 
@@ -831,14 +898,14 @@ class StateManager:
         async with self._connect() as db:
             cursor = await db.execute(
                 """INSERT OR IGNORE INTO prospects
-                   (id, company_id, first_name, last_name, email, email_verified,
+                   (id, product_id, company_id, first_name, last_name, email, email_verified,
                     email_status, phone, phone_verified, linkedin_url, title,
                     seniority, department, source, source_url, status, score,
                     personalization_notes, company, industry, company_size,
                     created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    prospect.id, prospect.company_id,
+                    prospect.id, getattr(prospect, "product_id", "") or "", prospect.company_id,
                     prospect.first_name, prospect.last_name,
                     prospect.email, int(prospect.email_verified),
                     prospect.email_status,
@@ -1086,6 +1153,7 @@ class StateManager:
         in_reply_to: str = "",
         approved_by: str = "",
         mailbox_id: str = "",
+        product_id: str = "",
     ) -> str | None:
         """Queue one outgoing email. Returns its id, or None when the
         (campaign, prospect, step) slot already exists — the double-send guard.
@@ -1095,12 +1163,12 @@ class StateManager:
         async with self._connect() as db:
             cursor = await db.execute(
                 """INSERT OR IGNORE INTO outbox
-                   (id, campaign_id, prospect_id, conversation_id, step, kind,
+                   (id, product_id, campaign_id, prospect_id, conversation_id, step, kind,
                     to_email, subject, body, status, send_at, provider,
                     thread_ref, in_reply_to, mailbox_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    item_id, campaign_id, prospect_id, conversation_id,
+                    item_id, product_id or "", campaign_id, prospect_id, conversation_id,
                     int(step), kind, _norm(to_email), subject, body,
                     status, send_at, provider, thread_ref, in_reply_to, mailbox_id or "",
                 ),
@@ -1734,6 +1802,7 @@ class StateManager:
         *,
         company_id: str = "",
         prospect_id: str = "",
+        product_id: str = "",
         collector: str = "",
         value_num: float | None = None,
         value_text: str = "",
@@ -1748,12 +1817,12 @@ class StateManager:
         async with self._connect() as db:
             await db.execute(
                 """INSERT INTO observations
-                       (id, company_id, prospect_id, signal_code, collector,
+                       (id, product_id, company_id, prospect_id, signal_code, collector,
                         value_num, value_text, confidence, evidence_url,
                         observed_at, run_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                            COALESCE(?, CURRENT_TIMESTAMP), ?)""",
-                (obs_id, company_id, prospect_id, signal_code, collector,
+                (obs_id, product_id or "", company_id, prospect_id, signal_code, collector,
                  value_num, value_text, float(confidence), evidence_url,
                  observed_at, run_id),
             )
@@ -2457,11 +2526,11 @@ class StateManager:
         async with self._connect() as db:
             await db.execute(
                 """INSERT INTO campaigns
-                   (id, name, channel, instantly_campaign_id, sequence_json,
+                   (id, product_id, name, channel, instantly_campaign_id, sequence_json,
                     prospect_ids_json, status, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    campaign.id, campaign.name, campaign.channel,
+                    campaign.id, getattr(campaign, "product_id", "") or "", campaign.name, campaign.channel,
                     campaign.instantly_campaign_id, campaign.sequence_json(),
                     json.dumps(campaign.prospect_ids), campaign.status,
                     campaign.created_at.isoformat(),
@@ -2508,11 +2577,11 @@ class StateManager:
         async with self._connect() as db:
             await db.execute(
                 """INSERT INTO conversations
-                   (id, prospect_id, campaign_id, channel, thread_json,
+                   (id, product_id, prospect_id, campaign_id, channel, thread_json,
                     intent, stage, status, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
-                    convo.id, convo.prospect_id, convo.campaign_id,
+                    convo.id, getattr(convo, "product_id", "") or "", convo.prospect_id, convo.campaign_id,
                     convo.channel, convo.thread_json(), convo.intent,
                     convo.stage, convo.status, convo.created_at.isoformat(),
                     convo.updated_at.isoformat(),
@@ -2866,3 +2935,400 @@ class StateManager:
             )
             rows = await cursor.fetchall()
             return [dict(r) for r in rows]
+
+    # ── Businesses ──
+
+    async def add_business(self, business: BusinessProfile) -> str:
+        if not business.id:
+            business.id = _new_id()
+        async with self._connect() as db:
+            await db.execute(
+                """INSERT INTO businesses
+                   (id, name, description, website, industry, company_size,
+                    business_location, target_markets, brand_voice, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    business.id, business.name, business.description, business.website,
+                    business.industry, business.company_size, business.business_location,
+                    business.target_markets_json(), business.brand_voice,
+                    business.created_at.isoformat(), business.updated_at.isoformat(),
+                ),
+            )
+            await db.commit()
+        return business.id
+
+    async def get_business(self, business_id: str) -> BusinessProfile | None:
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM businesses WHERE id = ?", (business_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return BusinessProfile.from_row(dict(row)) if row else None
+
+    async def list_businesses(self) -> list[BusinessProfile]:
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM businesses ORDER BY created_at DESC"
+            ) as cursor:
+                rows = await cursor.fetchall()
+                return [BusinessProfile.from_row(dict(r)) for r in rows]
+
+    async def update_business(self, business_id: str, **kwargs) -> bool:
+        if not kwargs:
+            return False
+        allowed = {"name", "description", "website", "industry", "company_size",
+                   "business_location", "target_markets", "brand_voice"}
+        invalid = set(kwargs) - allowed
+        if invalid:
+            raise ValueError(f"Invalid business column(s): {sorted(invalid)}")
+
+        vals = []
+        set_parts = []
+        for k, v in kwargs.items():
+            set_parts.append(f"{k} = ?")
+            if k == "target_markets" and isinstance(v, list):
+                vals.append(json.dumps(v))
+            else:
+                vals.append(v)
+        set_parts.append("updated_at = CURRENT_TIMESTAMP")
+        set_clause = ", ".join(set_parts)
+
+        async with self._connect() as db:
+            cursor = await db.execute(
+                f"UPDATE businesses SET {set_clause} WHERE id = ?",
+                (*vals, business_id),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def delete_business(self, business_id: str, force: bool = False) -> bool:
+        async with self._connect() as db:
+            if not force:
+                async with db.execute(
+                    "SELECT COUNT(*) FROM products WHERE business_id = ?", (business_id,)
+                ) as cursor:
+                    (cnt,) = await cursor.fetchone()
+                    if cnt > 0:
+                        raise ValueError(f"Cannot delete business '{business_id}': has {cnt} product(s) linked.")
+            cursor = await db.execute("DELETE FROM businesses WHERE id = ?", (business_id,))
+            await db.commit()
+            return cursor.rowcount > 0
+
+    # ── Products ──
+
+    async def add_product(self, product: Product) -> str:
+        if not product.id:
+            product.id = _new_id()
+        async with self._connect() as db:
+            await db.execute(
+                """INSERT INTO products
+                   (id, business_id, name, description, category, pricing,
+                    key_features, key_benefits, unique_selling_points,
+                    target_industries, objection_responses, offer, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    product.id, product.business_id, product.name, product.description,
+                    product.category, product.pricing, product.key_features_json(),
+                    product.key_benefits_json(), product.unique_selling_points_json(),
+                    product.target_industries_json(), product.objection_responses_json(),
+                    product.offer_json(), product.created_at.isoformat(),
+                    product.updated_at.isoformat(),
+                ),
+            )
+            await db.commit()
+        return product.id
+
+    async def get_product(self, product_id: str) -> Product | None:
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM products WHERE id = ?", (product_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return Product.from_row(dict(row)) if row else None
+
+    async def list_products(self, business_id: str | None = None) -> list[Product]:
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            if business_id:
+                sql = "SELECT * FROM products WHERE business_id = ? ORDER BY created_at DESC"
+                params = (business_id,)
+            else:
+                sql = "SELECT * FROM products ORDER BY created_at DESC"
+                params = ()
+            async with db.execute(sql, params) as cursor:
+                rows = await cursor.fetchall()
+                return [Product.from_row(dict(r)) for r in rows]
+
+    async def update_product(self, product_id: str, **kwargs) -> bool:
+        if not kwargs:
+            return False
+        allowed = {"business_id", "name", "description", "category", "pricing",
+                   "key_features", "key_benefits", "unique_selling_points",
+                   "target_industries", "objection_responses", "offer"}
+        invalid = set(kwargs) - allowed
+        if invalid:
+            raise ValueError(f"Invalid product column(s): {sorted(invalid)}")
+
+        vals = []
+        set_parts = []
+        for k, v in kwargs.items():
+            set_parts.append(f"{k} = ?")
+            if k in ("key_features", "key_benefits", "unique_selling_points", "target_industries") and isinstance(v, list):
+                vals.append(json.dumps(v))
+            elif k in ("objection_responses", "offer") and isinstance(v, dict):
+                vals.append(json.dumps(v))
+            else:
+                vals.append(v)
+        set_parts.append("updated_at = CURRENT_TIMESTAMP")
+        set_clause = ", ".join(set_parts)
+
+        async with self._connect() as db:
+            cursor = await db.execute(
+                f"UPDATE products SET {set_clause} WHERE id = ?",
+                (*vals, product_id),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def delete_product(self, product_id: str, force: bool = False) -> bool:
+        async with self._connect() as db:
+            if not force:
+                async with db.execute(
+                    "SELECT COUNT(*) FROM prospects WHERE product_id = ?", (product_id,)
+                ) as cursor:
+                    (cnt,) = await cursor.fetchone()
+                    if cnt > 0:
+                        raise ValueError(f"Cannot delete product '{product_id}': has {cnt} prospect(s) linked.")
+            cursor = await db.execute("DELETE FROM products WHERE id = ?", (product_id,))
+            await db.commit()
+            return cursor.rowcount > 0
+
+    # ── ICPs ──
+
+    async def add_icp(self, icp: ICP) -> str:
+        if not icp.id:
+            icp.id = _new_id()
+        async with self._connect() as db:
+            await db.execute(
+                """INSERT INTO icps
+                   (id, product_id, name, description, target_industries,
+                    company_sizes, target_geographies, job_titles, buyer_personas,
+                    pain_points, buying_signals, qualification_criteria,
+                    created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    icp.id, icp.product_id, icp.name, icp.description,
+                    json.dumps(icp.target_industries), json.dumps(icp.company_sizes),
+                    json.dumps(icp.target_geographies), json.dumps(icp.job_titles),
+                    json.dumps(icp.buyer_personas), json.dumps(icp.pain_points),
+                    json.dumps(icp.buying_signals), json.dumps(icp.qualification_criteria),
+                    icp.created_at.isoformat(), icp.updated_at.isoformat(),
+                ),
+            )
+            await db.commit()
+        return icp.id
+
+    async def get_icp(self, icp_id: str) -> ICP | None:
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM icps WHERE id = ?", (icp_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                return ICP.from_row(dict(row)) if row else None
+
+    async def list_icps(self, product_id: str | None = None) -> list[ICP]:
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            if product_id:
+                sql = "SELECT * FROM icps WHERE product_id = ? ORDER BY created_at DESC"
+                params = (product_id,)
+            else:
+                sql = "SELECT * FROM icps ORDER BY created_at DESC"
+                params = ()
+            async with db.execute(sql, params) as cursor:
+                rows = await cursor.fetchall()
+                return [ICP.from_row(dict(r)) for r in rows]
+
+    async def update_icp(self, icp_id: str, **kwargs) -> bool:
+        if not kwargs:
+            return False
+        allowed = {"product_id", "name", "description", "target_industries",
+                   "company_sizes", "target_geographies", "job_titles",
+                   "buyer_personas", "pain_points", "buying_signals",
+                   "qualification_criteria"}
+        invalid = set(kwargs) - allowed
+        if invalid:
+            raise ValueError(f"Invalid ICP column(s): {sorted(invalid)}")
+
+        vals = []
+        set_parts = []
+        for k, v in kwargs.items():
+            set_parts.append(f"{k} = ?")
+            if isinstance(v, (list, dict)):
+                vals.append(json.dumps(v))
+            else:
+                vals.append(v)
+        set_parts.append("updated_at = CURRENT_TIMESTAMP")
+        set_clause = ", ".join(set_parts)
+
+        async with self._connect() as db:
+            cursor = await db.execute(
+                f"UPDATE icps SET {set_clause} WHERE id = ?",
+                (*vals, icp_id),
+            )
+            await db.commit()
+            return cursor.rowcount > 0
+
+    async def delete_icp(self, icp_id: str) -> bool:
+        async with self._connect() as db:
+            cursor = await db.execute("DELETE FROM icps WHERE id = ?", (icp_id,))
+            await db.commit()
+            return cursor.rowcount > 0
+
+    # ── Product-specific queries ──
+
+    async def get_prospects_by_product(
+        self, product_id: str, status: str | None = None
+    ) -> list[Prospect]:
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            if status:
+                sql = "SELECT * FROM prospects WHERE product_id = ? AND status = ? ORDER BY created_at DESC"
+                params = (product_id, status)
+            else:
+                sql = "SELECT * FROM prospects WHERE product_id = ? ORDER BY created_at DESC"
+                params = (product_id,)
+            async with db.execute(sql, params) as cursor:
+                rows = await cursor.fetchall()
+                return [self._prospect_from_row(r) for r in rows]
+
+    async def get_campaigns_by_product(self, product_id: str) -> list[Campaign]:
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM campaigns WHERE product_id = ? ORDER BY created_at DESC",
+                (product_id,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                campaigns = []
+                for r in rows:
+                    d = dict(r)
+                    d["sequence"] = Campaign.sequence_from_json(d.pop("sequence_json"))
+                    d["prospect_ids"] = json.loads(d.pop("prospect_ids_json") or "[]")
+                    campaigns.append(Campaign(**d))
+                return campaigns
+
+    async def get_conversations_by_product(self, product_id: str) -> list[Conversation]:
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                "SELECT * FROM conversations WHERE product_id = ? ORDER BY updated_at DESC",
+                (product_id,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+                convos = []
+                for r in rows:
+                    d = dict(r)
+                    d["thread"] = Conversation.thread_from_json(d.pop("thread_json"))
+                    convos.append(Conversation(**d))
+                return convos
+
+    # ── Default Seeding & Backfill ──
+
+    async def ensure_default_product(self, config = None) -> tuple[str, str, str]:
+        """Ensure a default business profile, product, and ICP exist and backfill unassigned records.
+
+        Returns (business_id, product_id, icp_id). Safe to call repeatedly.
+        """
+        async with self._connect() as db:
+            # 1. Check or seed business
+            async with db.execute("SELECT id FROM businesses LIMIT 1") as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    business_id = row[0]
+                else:
+                    business_id = "default_business"
+                    company_name = getattr(getattr(config, "persona", None), "company", "") or "Default Business"
+                    industry = "SaaS"
+                    if config and hasattr(config, "icp") and config.icp and config.icp.industries:
+                        industry = config.icp.industries[0]
+                    tone = getattr(getattr(config, "persona", None), "tone", "") or "consultative, confident"
+                    await db.execute(
+                        """INSERT OR IGNORE INTO businesses
+                           (id, name, description, website, industry, brand_voice)
+                           VALUES (?, ?, ?, ?, ?, ?)""",
+                        (
+                            business_id,
+                            company_name,
+                            f"Business profile for {company_name}",
+                            "",
+                            industry,
+                            tone,
+                        ),
+                    )
+
+            # 2. Check or seed product
+            async with db.execute("SELECT id FROM products LIMIT 1") as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    product_id = row[0]
+                else:
+                    product_id = "default_product"
+                    prod_cfg = getattr(config, "product", None)
+                    p_name = getattr(prod_cfg, "name", "") or "Default Product"
+                    p_desc = getattr(prod_cfg, "description", "") or "Default product description"
+                    p_price = getattr(prod_cfg, "pricing", "") or "Starting at $99/mo"
+                    p_benefits = getattr(prod_cfg, "key_benefits", []) or []
+                    p_objections = getattr(prod_cfg, "objection_responses", {}) or {}
+                    p_offer = getattr(prod_cfg, "offer", {})
+                    p_offer_dict = p_offer.model_dump() if hasattr(p_offer, "model_dump") else (p_offer if isinstance(p_offer, dict) else {})
+
+                    await db.execute(
+                        """INSERT OR IGNORE INTO products
+                           (id, business_id, name, description, pricing,
+                            key_benefits, objection_responses, offer)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            product_id, business_id, p_name, p_desc, p_price,
+                            json.dumps(p_benefits), json.dumps(p_objections), json.dumps(p_offer_dict),
+                        ),
+                    )
+
+            # 3. Check or seed ICP
+            async with db.execute("SELECT id FROM icps WHERE product_id = ? LIMIT 1", (product_id,)) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    icp_id = row[0]
+                else:
+                    icp_id = "default_icp"
+                    icp_cfg = getattr(config, "icp", None)
+                    target_ind = getattr(icp_cfg, "industries", []) or ["SaaS"]
+                    company_sz = [getattr(icp_cfg, "company_size", "")] if getattr(icp_cfg, "company_size", "") else []
+                    titles = getattr(icp_cfg, "titles", []) or ["Founder", "VP"]
+                    geos = getattr(icp_cfg, "geography", []) or ["United States"]
+
+                    await db.execute(
+                        """INSERT OR IGNORE INTO icps
+                           (id, product_id, name, description, target_industries,
+                            company_sizes, target_geographies, job_titles)
+                           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            icp_id, product_id, "Default ICP", "Primary ideal customer profile",
+                            json.dumps(target_ind), json.dumps(company_sz), json.dumps(geos), json.dumps(titles),
+                        ),
+                    )
+
+            # 4. Backfill existing unassigned records
+            await db.execute("UPDATE prospects SET product_id = ? WHERE product_id = '' OR product_id IS NULL", (product_id,))
+            await db.execute("UPDATE campaigns SET product_id = ? WHERE product_id = '' OR product_id IS NULL", (product_id,))
+            await db.execute("UPDATE conversations SET product_id = ? WHERE product_id = '' OR product_id IS NULL", (product_id,))
+            await db.execute("UPDATE observations SET product_id = ? WHERE product_id = '' OR product_id IS NULL", (product_id,))
+            await db.execute("UPDATE outbox SET product_id = ? WHERE product_id = '' OR product_id IS NULL", (product_id,))
+
+            await db.commit()
+
+        return business_id, product_id, icp_id

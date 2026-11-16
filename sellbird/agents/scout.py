@@ -1236,35 +1236,46 @@ class Scout:
             return "", "invalid"
         return result.email, result.status
 
-    async def _score_contacts(self, contacts: list[Prospect]) -> list[Prospect]:
-        """Use Claude to score and add personalization notes to found contacts.
+    async def _score_contacts(self, contacts: list[Prospect], product_context = None) -> list[Prospect]:
+        """Score and add personalization notes to found contacts using local Ollama.
 
-        Falls back to a deterministic Python heuristic if Claude is
+        Falls back to a deterministic Python heuristic if inference is
         unavailable or returns malformed output, so scoring never blocks
         prospecting.
         """
         if not contacts:
             return contacts
 
-        # Seed every contact with a heuristic baseline first.
+        if product_context is None:
+            from sellbird.product_context import resolve_product_context
+            p_id = getattr(contacts[0], "product_id", "") if contacts else None
+            product_context = await resolve_product_context(self.state, p_id, config=self.config)
+
+        # Seed every contact with product_id and heuristic baseline
         for c in contacts:
+            if not getattr(c, "product_id", ""):
+                c.product_id = product_context.product_id
             c.score = self._heuristic_score(c)
 
         contact_summaries = []
         for i, c in enumerate(contacts):
             contact_summaries.append(
-                f"{i+1}. {c.full_name()} — {c.title} at {c.company} "
+                f"{i+1}. {c.full_name()} - {c.title} at {c.company} "
                 f"({c.industry}). Email: {c.email or 'none'}. "
                 f"Seniority: {c.seniority or 'unknown'}."
             )
 
+        target_industries = product_context.target_industries or self.config.icp.industries
+        target_titles = product_context.job_titles or self.config.icp.titles
+        company_size = product_context.icp.company_sizes[0] if (product_context.icp and product_context.icp.company_sizes) else self.config.icp.company_size
+
         prompt = f"""You are analyzing a batch of sales prospects that have already been found and verified.
 Your job is to score each one (1-100) based on how well they match the ICP, and add a short personalization note.
 
-Our product: {self.config.product.description}
-Target industries: {', '.join(self.config.icp.industries)}
-Target titles: {', '.join(self.config.icp.titles)}
-Target company size: {self.config.icp.company_size}
+Our product: {product_context.product_description}
+Target industries: {', '.join(target_industries)}
+Target titles: {', '.join(target_titles)}
+Target company size: {company_size}
 
 Here are the prospects to score, as found on the web:
 {fence(chr(10).join(contact_summaries), "found prospects")}

@@ -1442,10 +1442,14 @@ Respond with ONLY the category label, nothing else."""
         """Generate an appropriate response based on intent."""
         history = conversation_history(convo.thread, prospect.full_name())
 
+        p_id = getattr(convo, "product_id", "") or getattr(prospect, "product_id", "") or None
+        from sellbird.product_context import resolve_product_context
+        prod_ctx = await resolve_product_context(self.state, p_id, config=self.config)
+
         objection_context = ""
         if intent == "objection":
-            # Check if we have a pre-configured response
-            for trigger, response in self.config.product.objection_responses.items():
+            obj_map = prod_ctx.objection_responses or self.config.product.objection_responses
+            for trigger, response in obj_map.items():
                 if trigger.lower() in reply_text.lower():
                     objection_context = f"\nSuggested approach for this objection: {response}"
                     break
@@ -1468,11 +1472,17 @@ Respond with ONLY the category label, nothing else."""
                 "Answer their message and follow the intent guidance above."
             )
 
-        prompt = self.brain.load_prompt("handler", stage=convo.stage, booking=booking)
+        prompt = self.brain.load_prompt(
+            "handler",
+            stage=convo.stage,
+            booking=booking,
+            product_name=prod_ctx.product_name,
+            product_description=prod_ctx.product_description,
+        )
         if not prompt:
-            prompt = f"""You are {self.config.persona.name}, {self.config.persona.role} at {self.config.persona.company}.
-Your tone is: {self.config.persona.tone}
-Product: {self.config.product.name} — {self.config.product.description}
+            prompt = f"""You are {self.config.persona.name}, {self.config.persona.role} at {prod_ctx.business.name or self.config.persona.company}.
+Your tone is: {prod_ctx.business.brand_voice or self.config.persona.tone}
+Product: {prod_ctx.product_name} — {prod_ctx.product_description}
 
 NEXT STEP
 {booking}"""

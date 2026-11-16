@@ -20,6 +20,7 @@ class EmailStep(BaseModel):
 
 class Campaign(BaseModel):
     id: str
+    product_id: str = ""       # FK to products table
     name: str = ""
     channel: str = "email"  # email/linkedin
     instantly_campaign_id: str = ""

@@ -281,14 +281,18 @@ class Writer:
             if not prospects:
                 continue
 
+            from sellbird.product_context import resolve_product_context
+            p_id = getattr(prospects[0], "product_id", "") or None
+            prod_ctx = await resolve_product_context(self.state, p_id, config=self.config)
+
             logger.info(
                 f"Writer: Creating campaign '{batch_name}' for "
-                f"{len(prospects)} prospects."
+                f"{len(prospects)} prospects (Product: {prod_ctx.product_name})."
             )
 
             # Generate the email sequence
             self._no_reply = False
-            sequence = await self._write_sequence(prospects)
+            sequence = await self._write_sequence(prospects, product_context=prod_ctx)
             if not sequence:
                 paused = getattr(self.brain, "paused_reason", "") or (
                     "no reply from the model" if self._no_reply else "")
@@ -305,6 +309,7 @@ class Writer:
             # Create the campaign
             campaign = Campaign(
                 id="",
+                product_id=prod_ctx.product_id,
                 name=batch_name,
                 channel="email",
                 sequence=sequence,
@@ -321,7 +326,7 @@ class Writer:
             # Native providers: replace the shared template for email 1 with
             # a per-prospect draft grounded in that company's actual facts.
             if self.is_native:
-                await self._personalize_first_emails(campaign_id, prospects)
+                await self._personalize_first_emails(campaign_id, prospects, product_context=prod_ctx)
 
             await self.state.log_action(
                 action_type="write_campaign",
@@ -406,7 +411,7 @@ class Writer:
                 f"{MAX_WRITE_ATTEMPTS} unusable drafts; marked write_failed."
             )
 
-    async def _personalize_first_emails(self, campaign_id: str, prospects: list):
+    async def _personalize_first_emails(self, campaign_id: str, prospects: list, product_context = None):
         """Draft a grounded, per-prospect email 1 and stage it in the outbox.
 
         The outbox unique index means the sender's later template staging
@@ -425,7 +430,7 @@ class Writer:
         pending = []
         for prospect in prospects:
             try:
-                draft = await self._write_personal_email(prospect)
+                draft = await self._write_personal_email(prospect, product_context=product_context)
             except Exception as e:
                 logger.warning(f"Writer: personal draft failed for {prospect.email}: {e}")
                 continue
@@ -517,7 +522,7 @@ class Writer:
             + lines
         )
 
-    async def _write_personal_email(self, prospect) -> dict | None:
+    async def _write_personal_email(self, prospect, product_context = None) -> dict | None:
         """One grounded draft for one person. Facts in, one email out."""
         inbox_rule = ""
         if prospect.is_company_inbox:
@@ -562,16 +567,21 @@ class Writer:
         if startup is not None:
             facts.extend(startup)
 
+        if product_context is None:
+            from sellbird.product_context import resolve_product_context
+            p_id = getattr(prospect, "product_id", "") or None
+            product_context = await resolve_product_context(self.state, p_id, config=self.config)
+
         prompt = self.brain.load_prompt(
             "writer",
-            product_name=self.config.product.name,
-            product_description=self.config.product.description,
-            product_benefits="\n".join(f"- {b}" for b in self.config.product.key_benefits),
-            product_pricing=self.config.product.pricing,
+            product_name=product_context.product_name,
+            product_description=product_context.product_description,
+            product_benefits="\n".join(f"- {b}" for b in product_context.key_benefits),
+            product_pricing=product_context.pricing,
             persona_name=self.config.persona.name,
-            persona_company=self.config.persona.company,
+            persona_company=product_context.business.name or self.config.persona.company,
             persona_role=self.config.persona.role,
-            persona_tone=self.config.persona.tone,
+            persona_tone=product_context.business.brand_voice or self.config.persona.tone,
         ) or ""
         if self.skills:
             prompt += "\n\n" + self.skills
@@ -623,7 +633,7 @@ Return ONLY JSON: {{"subject": "...", "body": "..."}}"""
             return None
         return {"subject": subject[:120], "body": body[:2000]}
 
-    async def _write_sequence(self, prospects: list) -> list[EmailStep]:
+    async def _write_sequence(self, prospects: list, product_context = None) -> list[EmailStep]:
         """Ask the brain to write a 3-email sequence."""
         # Build context about the prospects
         prospect_summary = "\n".join(
@@ -645,26 +655,31 @@ Return ONLY JSON: {{"subject": "...", "body": "..."}}"""
                 "  these prospects' industry or role (use the notes above)."
             )
 
+        if product_context is None:
+            from sellbird.product_context import resolve_product_context
+            p_id = getattr(prospects[0], "product_id", "") if prospects else None
+            product_context = await resolve_product_context(self.state, p_id, config=self.config)
+
         prompt = self.brain.load_prompt(
             "writer",
-            product_name=self.config.product.name,
-            product_description=self.config.product.description,
-            product_benefits="\n".join(f"- {b}" for b in self.config.product.key_benefits),
-            product_pricing=self.config.product.pricing,
+            product_name=product_context.product_name,
+            product_description=product_context.product_description,
+            product_benefits="\n".join(f"- {b}" for b in product_context.key_benefits),
+            product_pricing=product_context.pricing,
             persona_name=self.config.persona.name,
-            persona_company=self.config.persona.company,
+            persona_company=product_context.business.name or self.config.persona.company,
             persona_role=self.config.persona.role,
-            persona_tone=self.config.persona.tone,
+            persona_tone=product_context.business.brand_voice or self.config.persona.tone,
         )
 
         if not prompt:
-            prompt = f"""You are {self.config.persona.name}, {self.config.persona.role} at {self.config.persona.company}.
-Your tone is: {self.config.persona.tone}
+            prompt = f"""You are {self.config.persona.name}, {self.config.persona.role} at {product_context.business.name or self.config.persona.company}.
+Your tone is: {product_context.business.brand_voice or self.config.persona.tone}
 
-Product: {self.config.product.name}
-Description: {self.config.product.description}
-Key benefits: {', '.join(self.config.product.key_benefits)}
-Pricing: {self.config.product.pricing}"""
+Product: {product_context.product_name}
+Description: {product_context.product_description}
+Key benefits: {', '.join(product_context.key_benefits)}
+Pricing: {product_context.pricing}"""
 
         if self.skills:
             prompt += "\n\n" + self.skills
@@ -876,12 +891,11 @@ Return ONLY a JSON object: {{"subject": "...", "body": "..."}}"""
         batches: dict[str, list] = {}
 
         for prospect in prospects:
-            # Group by industry + rough title category
+            # Group by product_id + industry + rough title category
+            prod_prefix = f"prod-{prospect.product_id}-" if getattr(prospect, "product_id", "") else ""
             industry = prospect.industry or "general"
-            # Inbox prospects get their own campaign: their templates can't
-            # greet anyone by name.
             kind = "inbox-outreach" if prospect.is_company_inbox else "outreach"
-            key = f"{industry}-{kind}"
+            key = f"{prod_prefix}{industry}-{kind}"
 
             if key not in batches:
                 batches[key] = []

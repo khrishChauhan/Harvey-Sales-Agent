@@ -16,6 +16,7 @@ def _utcnow() -> datetime:
 
 class Prospect(BaseModel):
     id: str = ""
+    product_id: str = ""       # FK to products table
     company_id: str = ""       # FK to companies table
     first_name: str = ""       # required for a valid contact
     last_name: str = ""        # required for a valid contact

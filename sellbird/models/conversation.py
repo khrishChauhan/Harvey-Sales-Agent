@@ -32,6 +32,7 @@ STAGES = [
 
 class Conversation(BaseModel):
     id: str
+    product_id: str = ""
     prospect_id: str
     campaign_id: str = ""
     channel: str = "email"
