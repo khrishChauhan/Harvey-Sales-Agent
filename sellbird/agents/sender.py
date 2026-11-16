@@ -700,6 +700,7 @@ class Sender:
                 item_id = await self.state.add_outbox_item(
                     prospect_id=prospect.id,
                     campaign_id=campaign.id,
+                    product_id=getattr(campaign, "product_id", "") or getattr(prospect, "product_id", "") or "",
                     step=step.step,
                     to_email=email,
                     subject=self._render(step.subject, prospect),

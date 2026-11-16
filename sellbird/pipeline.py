@@ -61,6 +61,7 @@ async def run_profile_stage(
     limit: int = 100,
     stale_days: int = PROFILE_STALE_DAYS,
     config=None,
+    product_id: str | None = None,
 ) -> tuple[int, int, str]:
     """Profile whatever currently needs it.
 
@@ -68,6 +69,7 @@ async def run_profile_stage(
     business, no browser, no model call — so it is safe to run on every
     heartbeat without touching the Claude budget. ``config`` says which open
     roles count as hiring intent (``icp.hiring_signals``, else ``icp.titles``).
+    If product_id is provided, roles and signals are resolved from that product's ICP.
     """
     from sellbird.collectors.profile import profile_companies
 
@@ -77,7 +79,26 @@ async def run_profile_stage(
         return 0, 0, ""
 
     logger.info("profile: %d companies need a look", len(pending))
-    observations, run_id = await profile_companies(state, pending, config=config)
+
+    active_config = config
+    if product_id:
+        try:
+            from types import SimpleNamespace
+            from sellbird.product_context import resolve_product_context
+            prod_ctx = await resolve_product_context(state, product_id, config=config)
+            hiring_sigs = prod_ctx.buying_signals or getattr(getattr(config, "icp", None), "hiring_signals", [])
+            active_config = SimpleNamespace(
+                icp=SimpleNamespace(
+                    hiring_signals=hiring_sigs,
+                    titles=prod_ctx.job_titles,
+                    industries=prod_ctx.target_industries,
+                ),
+                compliance=getattr(config, "compliance", None),
+            )
+        except Exception as e:
+            logger.debug(f"profile_stage: resolving product context failed: {e}")
+
+    observations, run_id = await profile_companies(state, pending, config=active_config)
     return len(pending), observations, run_id
 
 
@@ -90,19 +111,45 @@ async def run_prospecting(
     profile: bool = True,
     profile_limit: int = 200,
     dry_run: bool = False,
+    product_id: str | None = None,
 ) -> PipelineReport:
     """Discover businesses, then read what their websites say about them.
 
-    The two stages are deliberately not coupled through a list: profiling
-    queries the database for what needs attention, so it also sweeps up
-    anything an earlier run left unfinished.
+    If product_id is supplied, discovery and profiling are isolated to that
+    specific product's ICP and buying signals.
     """
     from sellbird.collectors.discover import DEFAULT_PROVIDER, run_discovery
 
     report = PipelineReport()
 
+    active_config = config
+    if product_id:
+        try:
+            from types import SimpleNamespace
+            from sellbird.product_context import resolve_product_context
+            prod_ctx = await resolve_product_context(state, product_id, config=config)
+            active_config = SimpleNamespace(
+                product=SimpleNamespace(
+                    name=prod_ctx.product_name,
+                    description=prod_ctx.product_description,
+                    pricing=prod_ctx.pricing,
+                    key_benefits=prod_ctx.key_benefits,
+                ),
+                icp=SimpleNamespace(
+                    industries=prod_ctx.target_industries,
+                    titles=prod_ctx.job_titles,
+                    company_size=prod_ctx.icp.company_sizes[0] if (prod_ctx.icp and prod_ctx.icp.company_sizes) else "10-200",
+                    hiring_signals=prod_ctx.buying_signals,
+                    geography=getattr(getattr(config, "icp", None), "geography", []),
+                    geo_coordinates=getattr(getattr(config, "icp", None), "geo_coordinates", None),
+                ),
+                compliance=getattr(config, "compliance", None),
+            )
+        except Exception as e:
+            logger.debug(f"prospecting: resolving product context failed: {e}")
+
     discovery = await run_discovery(
-        state, config, provider or DEFAULT_PROVIDER, queries,
+        state, active_config, provider or DEFAULT_PROVIDER, queries,
         max_spend=max_spend, dry_run=dry_run,
     )
     report.discover = discovery.as_dict()
@@ -119,7 +166,7 @@ async def run_prospecting(
     # have been interrupted, and observations go stale on a schedule.
     try:
         companies, observations, run_id = await run_profile_stage(
-            state, limit=profile_limit, config=config)
+            state, limit=profile_limit, config=active_config, product_id=product_id)
         report.profiled_companies = companies
         report.profile_observations = observations
         report.profile_run_id = run_id

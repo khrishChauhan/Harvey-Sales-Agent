@@ -2,7 +2,7 @@
 
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from sellbird.state import StateManager
@@ -19,16 +19,45 @@ class Analyst:
     def __init__(self, state: StateManager):
         self.state = state
 
-    async def run(self):
-        """Generate analytics report from current pipeline data."""
-        logger.info("Analyst: Running performance analysis...")
+    async def run(self, product_id: str | None = None) -> dict:
+        """Generate analytics report from current pipeline data.
+
+        If product_id is provided, generates an isolated report for that product.
+        If product_id is None, generates the global report with an added 'by_product'
+        breakdown for every active product.
+        """
+        logger.info(f"Analyst: Running performance analysis{f' for product {product_id}' if product_id else ''}...")
+
+        if product_id:
+            report = {
+                "generated_at": datetime.now(timezone.utc).isoformat(),
+                "product_id": product_id,
+                "pipeline": await self._pipeline_summary(product_id=product_id),
+                "campaigns": await self._campaign_performance(product_id=product_id),
+                "intents": await self._intent_breakdown(product_id=product_id),
+                "stages": await self._stage_breakdown(product_id=product_id),
+                "insights": [],
+            }
+            report["insights"] = self._generate_insights(report)
+            data_dir = Path(self.state.db_path).parent
+            report_path = data_dir / f"analytics_{product_id}.json"
+            try:
+                tmp_path = report_path.with_suffix(".json.tmp")
+                with open(tmp_path, "w", encoding="utf-8") as f:
+                    json.dump(report, f, indent=2)
+                tmp_path.replace(report_path)
+                logger.info(f"Analyst: Product report written to {report_path}")
+            except OSError as e:
+                logger.error(f"Analyst: Failed to write product report: {e}")
+            return report
 
         report = {
-            "generated_at": datetime.utcnow().isoformat(),
+            "generated_at": datetime.now(timezone.utc).isoformat(),
             "pipeline": await self._pipeline_summary(),
             "campaigns": await self._campaign_performance(),
             "intents": await self._intent_breakdown(),
             "stages": await self._stage_breakdown(),
+            "by_product": await self._by_product_summary(),
             "insights": [],
         }
 
@@ -62,21 +91,44 @@ class Analyst:
         for insight in report["insights"]:
             logger.info(f"Analyst: Insight — {insight}")
 
-    async def _pipeline_summary(self) -> dict:
+        return report
+
+    async def _by_product_summary(self) -> dict[str, dict]:
+        """Generate performance breakdowns per product."""
+        out = {}
+        try:
+            products = await self.state.list_products()
+            for p in products:
+                pipeline = await self._pipeline_summary(product_id=p.id)
+                campaigns = await self._campaign_performance(product_id=p.id)
+                intents = await self._intent_breakdown(product_id=p.id)
+                stages = await self._stage_breakdown(product_id=p.id)
+                out[p.id] = {
+                    "product_name": p.name,
+                    "pipeline": pipeline,
+                    "campaigns": campaigns,
+                    "intents": intents,
+                    "stages": stages,
+                }
+        except Exception as e:
+            logger.debug(f"Analyst: by_product_summary failed: {e}")
+        return out
+
+    async def _pipeline_summary(self, product_id: str | None = None) -> dict:
         """Count prospects by status."""
-        return await self.state.count_prospects_by_status()
+        return await self.state.count_prospects_by_status(product_id=product_id)
 
-    async def _campaign_performance(self) -> list[dict]:
+    async def _campaign_performance(self, product_id: str | None = None) -> list[dict]:
         """Get stats for each campaign."""
-        return await self.state.get_campaign_stats()
+        return await self.state.get_campaign_stats(product_id=product_id)
 
-    async def _intent_breakdown(self) -> dict:
+    async def _intent_breakdown(self, product_id: str | None = None) -> dict:
         """Count replies by intent classification."""
-        return await self.state.get_intent_distribution()
+        return await self.state.get_intent_distribution(product_id=product_id)
 
-    async def _stage_breakdown(self) -> dict:
+    async def _stage_breakdown(self, product_id: str | None = None) -> dict:
         """Count conversations by sales stage."""
-        return await self.state.get_stage_distribution()
+        return await self.state.get_stage_distribution(product_id=product_id)
 
     def _generate_insights(self, report: dict) -> list[str]:
         """Derive actionable insights from the data.

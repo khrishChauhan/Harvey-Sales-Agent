@@ -127,14 +127,22 @@ def operator_rules_block(rules: str) -> str:
     )
 
 
-def offer_block(config) -> str:
-    """What email 1 offers: ``product.offer.entry``, the free, useful thing you
-    can really deliver (an audit, a mockup, a sample report).
+def offer_block(config, product_context=None) -> str:
+    """What email 1 offers: product-specific offer if present, else ``product.offer.entry``,
+    the free, useful thing you can really deliver (an audit, a mockup, a sample report).
 
     Without one, email 1 can only ask a question, and a question alone gives
     the reader nothing; so the writer falls back to that and says so."""
-    offer = getattr(getattr(config, "product", None), "offer", None)
-    entry = str(getattr(offer, "entry", "") or "").strip()
+    entry = ""
+    if product_context and getattr(product_context, "offer", None):
+        po = product_context.offer
+        if isinstance(po, dict):
+            entry = str(po.get("entry") or po.get("type") or po.get("cta") or "").strip()
+        elif isinstance(po, str):
+            entry = po.strip()
+    if not entry:
+        offer = getattr(getattr(config, "product", None), "offer", None)
+        entry = str(getattr(offer, "entry", "") or "").strip()
     if not entry:
         return ("\n\nYOUR OFFER: none set (product.offer.entry). End email 1 with one easy\n"
                 "question about the problem you found instead.")
@@ -451,6 +459,7 @@ class Writer:
             item_id = await self.state.add_outbox_item(
                 prospect_id=prospect.id,
                 campaign_id=campaign_id,
+                product_id=batch_product_id or getattr(prospect, "product_id", "") or "",
                 step=1,
                 to_email=prospect.email,
                 subject=draft["subject"],
@@ -590,7 +599,7 @@ class Writer:
             prompt += self._startup_playbook()
         prompt += await self._feedback_block([prospect.id])
         rules = getattr(self, "email_rules", "")
-        prompt += offer_block(self.config)
+        prompt += offer_block(self.config, product_context=product_context)
         prompt += operator_rules_block(rules)
         if rules:
             shape = (

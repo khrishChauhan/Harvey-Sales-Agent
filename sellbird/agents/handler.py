@@ -1293,6 +1293,7 @@ class Handler:
         item_id = await self.state.add_outbox_item(
             prospect_id=prospect.id,
             conversation_id=convo.id,
+            product_id=getattr(convo, "product_id", "") or getattr(prospect, "product_id", "") or "",
             kind="reply",
             to_email=prospect.email,
             subject=subject or "Re: your note",
@@ -1518,9 +1519,17 @@ The prospect's intent is: {intent}
 Write a reply that:"""
 
         if intent == "accepted_offer":
-            offer = str(getattr(self.config.product.offer, "entry", "") or "")
+            offer_entry = ""
+            if prod_ctx and getattr(prod_ctx, "offer", None):
+                po = prod_ctx.offer
+                if isinstance(po, dict):
+                    offer_entry = str(po.get("entry") or po.get("type") or po.get("cta") or "").strip()
+                elif isinstance(po, str):
+                    offer_entry = po.strip()
+            if not offer_entry:
+                offer_entry = str(getattr(self.config.product.offer, "entry", "") or "")
             prompt += f"""
-- They said yes to your offer ({offer}). Thank them in a few words and say what happens next.
+- They said yes to your offer ({offer_entry}). Thank them in a few words and say what happens next.
 - One to three short sentences, under 60 words. No new pitch, no meeting ask."""
             if handoff and handoff.get("ok") and handoff.get("result"):
                 prompt += f"""

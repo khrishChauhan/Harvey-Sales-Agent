@@ -52,11 +52,13 @@ def current_roles(observations: list[dict]) -> list[dict]:
 
 
 def company_fit(company: dict, prospects: list[dict], observations: list[dict],
-                config, dnc: list[str] | None = None) -> tuple[int, list[str]]:
+                config, dnc: list[str] | None = None, product_context=None) -> tuple[int, list[str]]:
     """(score, reasons) for one company. ``prospects`` and ``observations``
     are that company's rows, as dicts. ``dnc`` is the do-not-contact list
-    (default: the config's)."""
-    icp = config.icp
+    (default: the config's). If ``product_context`` is given, scoring is
+    evaluated against that product's specific target industries, job titles,
+    and buying signals."""
+    icp = getattr(config, "icp", None) if product_context is None else getattr(product_context, "icp", None)
     if dnc is None:
         dnc = getattr(getattr(config, "compliance", None), "do_not_contact", None) or []
     domain = (company.get("domain") or "").lower()
@@ -65,23 +67,36 @@ def company_fit(company: dict, prospects: list[dict], observations: list[dict],
 
     score, reasons = 0, []
 
-    industries = {i.strip().lower() for i in (icp.industries or [])}
+    target_industries = (
+        (product_context.target_industries if product_context else None)
+        or getattr(icp, "industries", None)
+        or getattr(icp, "target_industries", None)
+        or []
+    )
+    industries = {i.strip().lower() for i in target_industries}
     if (company.get("industry") or "").strip().lower() in industries:
         score += SECTOR
         reasons.append(f"sector: {company['industry']}")
+
+    target_titles = (
+        (product_context.job_titles if product_context else None)
+        or getattr(icp, "titles", None)
+        or getattr(icp, "job_titles", None)
+        or []
+    )
 
     # Someone who opted out or is on the list won't be written to: they
     # don't make the company reachable.
     live = [p for p in prospects if (p.get("status") or "") not in DEAD_STATUSES
             and not (dnc and p.get("email") and do_not_contact_match(p["email"], dnc))]
     named = [p for p in live if (p.get("first_name") or "").strip()]
-    makers = [p for p in named if icp.titles and title_matches(p.get("title") or "", icp.titles)]
+    makers = [p for p in named if target_titles and title_matches(p.get("title") or "", target_titles)]
     if not makers:
         # Names the site lists that Sellbird didn't turn into contacts.
         for o in observations:
             if o.get("signal_code") == "DECISION_MAKER_TITLE":
                 title = (o.get("value_text") or "").split("—", 1)[-1].strip(" ~()")
-                if icp.titles and title_matches(title, icp.titles):
+                if target_titles and title_matches(title, target_titles):
                     makers.append({"title": title, "first_name": ""})
                     break
     if makers:
@@ -105,7 +120,11 @@ def company_fit(company: dict, prospects: list[dict], observations: list[dict],
     else:
         reasons.append("no way to reach yet")
 
-    terms = _hiring_terms(icp)
+    if product_context and getattr(product_context, "buying_signals", None):
+        terms = [t.strip().lower() for t in product_context.buying_signals if t.strip()]
+    else:
+        terms = _hiring_terms(icp)
+
     roles = current_roles(observations)
     hit = next((t for o in roles if (t := _role_matches(o.get("value_text"), terms))), "")
     if hit:

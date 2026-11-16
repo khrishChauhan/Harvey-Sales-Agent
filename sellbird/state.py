@@ -1836,7 +1836,7 @@ class StateManager:
             return 0
         payload = [
             (
-                _new_id(), r.get("company_id", ""), r.get("prospect_id", ""),
+                _new_id(), r.get("product_id", "") or "", r.get("company_id", ""), r.get("prospect_id", ""),
                 r["signal_code"], r.get("collector", ""), r.get("value_num"),
                 r.get("value_text", ""), float(r.get("confidence", 1.0)),
                 r.get("evidence_url", ""), r.get("observed_at"),
@@ -1847,10 +1847,10 @@ class StateManager:
         async with self._connect() as db:
             await db.executemany(
                 """INSERT INTO observations
-                       (id, company_id, prospect_id, signal_code, collector,
+                       (id, product_id, company_id, prospect_id, signal_code, collector,
                         value_num, value_text, confidence, evidence_url,
                         observed_at, run_id)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                            COALESCE(?, CURRENT_TIMESTAMP), ?)""",
                 payload,
             )
@@ -2409,11 +2409,15 @@ class StateManager:
             ) as cursor:
                 return (await cursor.fetchone())[0]
 
-    async def count_prospects_by_status(self) -> dict[str, int]:
+    async def count_prospects_by_status(self, product_id: str | None = None) -> dict[str, int]:
         async with self._connect() as db:
-            async with db.execute(
-                "SELECT status, COUNT(*) FROM prospects GROUP BY status"
-            ) as cursor:
+            query = "SELECT status, COUNT(*) FROM prospects"
+            params = ()
+            if product_id is not None:
+                query += " WHERE product_id = ?"
+                params = (product_id,)
+            query += " GROUP BY status"
+            async with db.execute(query, params) as cursor:
                 rows = await cursor.fetchall()
                 return {row[0]: row[1] for row in rows}
 
@@ -2644,22 +2648,26 @@ class StateManager:
 
     # ── Analytics ──
 
-    async def get_campaign_stats(self) -> list[dict]:
+    async def get_campaign_stats(self, product_id: str | None = None) -> list[dict]:
         """Get performance stats for each campaign (one indexed pass over conversations)."""
         async with self._connect() as db:
             db.row_factory = aiosqlite.Row
-            async with db.execute(
-                """SELECT c.id, c.name, c.status, c.prospect_ids_json,
+            query = """SELECT c.id, c.product_id, c.name, c.status, c.prospect_ids_json,
                           COUNT(v.id) as reply_count,
                           SUM(CASE WHEN v.intent = 'interested' THEN 1 ELSE 0 END) as interested_count,
                           SUM(CASE WHEN v.intent = 'objection' THEN 1 ELSE 0 END) as objection_count,
                           SUM(CASE WHEN v.intent = 'not_interested' THEN 1 ELSE 0 END) as not_interested_count
                    FROM campaigns c
                    LEFT JOIN conversations v ON v.campaign_id = c.id
-                   WHERE c.status IN ('active', 'completed')
+                   WHERE c.status IN ('active', 'completed')"""
+            params = ()
+            if product_id is not None:
+                query += " AND c.product_id = ?"
+                params = (product_id,)
+            query += """
                    GROUP BY c.id
                    ORDER BY c.created_at DESC"""
-            ) as cursor:
+            async with db.execute(query, params) as cursor:
                 rows = await cursor.fetchall()
                 stats = []
                 for r in rows:
@@ -2675,21 +2683,29 @@ class StateManager:
                     stats.append(d)
                 return stats
 
-    async def get_intent_distribution(self) -> dict[str, int]:
+    async def get_intent_distribution(self, product_id: str | None = None) -> dict[str, int]:
         """Count conversations by intent."""
         async with self._connect() as db:
-            async with db.execute(
-                "SELECT intent, COUNT(*) FROM conversations WHERE intent != '' GROUP BY intent"
-            ) as cursor:
+            query = "SELECT intent, COUNT(*) FROM conversations WHERE intent != ''"
+            params = ()
+            if product_id is not None:
+                query += " AND product_id = ?"
+                params = (product_id,)
+            query += " GROUP BY intent"
+            async with db.execute(query, params) as cursor:
                 rows = await cursor.fetchall()
                 return {row[0]: row[1] for row in rows}
 
-    async def get_stage_distribution(self) -> dict[str, int]:
+    async def get_stage_distribution(self, product_id: str | None = None) -> dict[str, int]:
         """Count conversations by sales stage."""
         async with self._connect() as db:
-            async with db.execute(
-                "SELECT stage, COUNT(*) FROM conversations WHERE stage != '' GROUP BY stage"
-            ) as cursor:
+            query = "SELECT stage, COUNT(*) FROM conversations WHERE stage != ''"
+            params = ()
+            if product_id is not None:
+                query += " AND product_id = ?"
+                params = (product_id,)
+            query += " GROUP BY stage"
+            async with db.execute(query, params) as cursor:
                 rows = await cursor.fetchall()
                 return {row[0]: row[1] for row in rows}
 

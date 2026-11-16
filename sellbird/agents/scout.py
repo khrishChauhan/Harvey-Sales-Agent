@@ -1255,7 +1255,7 @@ class Scout:
         for c in contacts:
             if not getattr(c, "product_id", ""):
                 c.product_id = product_context.product_id
-            c.score = self._heuristic_score(c)
+            c.score = self._heuristic_score(c, product_context=product_context)
 
         contact_summaries = []
         for i, c in enumerate(contacts):
@@ -1326,24 +1326,40 @@ Respond ONLY with the JSON array."""
         contacts.sort(key=lambda c: c.score, reverse=True)
         return contacts
 
-    def _heuristic_score(self, contact: Prospect) -> int:
+    def _heuristic_score(self, contact: Prospect, product_context=None) -> int:
         """Deterministic ICP fit score used as a fallback / baseline."""
         score = 40
 
+        target_titles = (
+            product_context.job_titles
+            if product_context and getattr(product_context, "job_titles", None)
+            else (getattr(self.config.icp, "titles", []) if getattr(self.config, "icp", None) else [])
+        )
+        target_industries = (
+            product_context.target_industries
+            if product_context and getattr(product_context, "target_industries", None)
+            else (getattr(self.config.icp, "industries", []) if getattr(self.config, "icp", None) else [])
+        )
+
         # Title / seniority fit.
-        if self._title_matches_icp(contact.title):
+        if target_titles:
+            from sellbird.collectors.people import title_matches
+            if title_matches(contact.title, target_titles):
+                score += 25
+        elif self._title_matches_icp(contact.title):
             score += 25
+
         seniority_bonus = {
             "c_suite": 20, "vp": 15, "director": 10, "manager": 5, "individual": 0,
         }
         score += seniority_bonus.get(contact.seniority, 0)
 
         # Industry fit.
-        if contact.industry and self.config.icp.industries:
+        if contact.industry and target_industries:
             if any(
                 ind.lower() in contact.industry.lower()
                 or contact.industry.lower() in ind.lower()
-                for ind in self.config.icp.industries
+                for ind in target_industries
             ):
                 score += 10
 

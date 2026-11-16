@@ -393,3 +393,197 @@ async def test_no_cross_product_context_leakage(state):
     assert "Dental Office Manager" in brief2
     assert "FirewallPro" not in brief2
     assert "SOC2" not in brief2
+
+
+# ── 15. Analyst Product Isolation ──
+
+@pytest.mark.asyncio
+async def test_analyst_product_isolation(state):
+    from sellbird.agents.analyst import Analyst
+    from sellbird.models.campaign import Campaign
+
+    b_id = await state.add_business(BusinessProfile(name="Analytics Corp"))
+    p1_id = await state.add_product(Product(business_id=b_id, name="SecurityScanner"))
+    p2_id = await state.add_product(Product(business_id=b_id, name="BillingBot"))
+
+    # Seed prospects for Product 1 (3 prospects) and Product 2 (1 prospect)
+    await state.add_prospect(Prospect(first_name="P1_A", last_name="User", email="p1a@test.example", product_id=p1_id, status="contacted"))
+    await state.add_prospect(Prospect(first_name="P1_B", last_name="User", email="p1b@test.example", product_id=p1_id, status="replied"))
+    await state.add_prospect(Prospect(first_name="P1_C", last_name="User", email="p1c@test.example", product_id=p1_id, status="new"))
+    await state.add_prospect(Prospect(first_name="P2_A", last_name="User", email="p2a@test.example", product_id=p2_id, status="new"))
+
+    # Seed campaigns for Product 1
+    c1 = Campaign(id="camp1", name="Sec Campaign", status="active", product_id=p1_id, prospect_ids=["p1a", "p1b"])
+    await state.add_campaign(c1)
+
+    # Seed campaigns for Product 2
+    c2 = Campaign(id="camp2", name="Bill Campaign", status="active", product_id=p2_id, prospect_ids=["p2a"])
+    await state.add_campaign(c2)
+
+    analyst = Analyst(state)
+
+    # Isolated analysis for Product 1
+    rep1 = await analyst.run(product_id=p1_id)
+    assert rep1["product_id"] == p1_id
+    assert rep1["pipeline"].get("contacted") == 1
+    assert rep1["pipeline"].get("replied") == 1
+    assert rep1["pipeline"].get("new") == 1
+    p1_campaign_names = [c["name"] for c in rep1["campaigns"]]
+    assert "Sec Campaign" in p1_campaign_names
+    assert "Bill Campaign" not in p1_campaign_names
+
+    # Isolated analysis for Product 2
+    rep2 = await analyst.run(product_id=p2_id)
+    assert rep2["product_id"] == p2_id
+    assert rep2["pipeline"].get("new") == 1
+    assert rep2["pipeline"].get("contacted", 0) == 0
+    p2_campaign_names = [c["name"] for c in rep2["campaigns"]]
+    assert "Bill Campaign" in p2_campaign_names
+    assert "Sec Campaign" not in p2_campaign_names
+
+    # Global analysis with by_product breakdown
+    global_rep = await analyst.run()
+    assert "by_product" in global_rep
+    assert p1_id in global_rep["by_product"]
+    assert p2_id in global_rep["by_product"]
+    assert global_rep["by_product"][p1_id]["product_name"] == "SecurityScanner"
+    assert global_rep["by_product"][p2_id]["product_name"] == "BillingBot"
+
+
+# ── 16. Scoring and Buying-Signals Isolation across Products ──
+
+@pytest.mark.asyncio
+async def test_product_scoring_and_buying_signals_use_correct_icp(state):
+    from sellbird.fit import company_fit
+    from sellbird.agents.scout import Scout
+    from types import SimpleNamespace
+
+    b_id = await state.add_business(BusinessProfile(name="MultiTech"))
+    p1_id = await state.add_product(Product(
+        business_id=b_id,
+        name="FintechAudit",
+        target_industries=["Fintech"],
+    ))
+    await state.add_icp(ICP(
+        product_id=p1_id,
+        name="Fintech CISO",
+        target_industries=["Fintech"],
+        job_titles=["Chief Information Security Officer"],
+        buying_signals=["SOC2 Auditor", "Compliance Engineer"],
+    ))
+
+    p2_id = await state.add_product(Product(
+        business_id=b_id,
+        name="DentalDental",
+        target_industries=["Healthcare"],
+    ))
+    await state.add_icp(ICP(
+        product_id=p2_id,
+        name="Dental ICP",
+        target_industries=["Healthcare"],
+        job_titles=["Dental Practice Manager"],
+        buying_signals=["Hygienist"],
+    ))
+
+    ctx1 = await resolve_product_context(state, p1_id)
+    ctx2 = await resolve_product_context(state, p2_id)
+
+    company = {"id": "c1", "domain": "fintechsecure.example", "industry": "Fintech"}
+    prospects = [{"id": "pr1", "first_name": "Dave", "title": "Chief Information Security Officer", "email": "dave@fintechsecure.example", "email_status": "verified"}]
+    observations = [
+        {"signal_code": "HIRING_ROLE", "value_text": "Hiring a SOC2 Auditor", "observed_at": "2026-01-01"},
+    ]
+
+    cfg = SimpleNamespace(icp=SimpleNamespace(industries=[], titles=[], hiring_signals=[]), compliance=SimpleNamespace(do_not_contact=[]))
+
+    # Evaluate against Product 1: matches industry (20), title (30), verified email (25), buying signal (25) = 100
+    score1, reasons1 = company_fit(company, prospects, observations, cfg, product_context=ctx1)
+    assert score1 >= 95
+    assert any("sector: Fintech" in r for r in reasons1)
+    assert any("Chief Information Security Officer" in r for r in reasons1)
+    assert any("soc2 auditor" in r.lower() for r in reasons1)
+
+    # Evaluate against Product 2: does NOT match industry, title, or buying signal
+    score2, reasons2 = company_fit(company, prospects, observations, cfg, product_context=ctx2)
+    assert score2 <= 45  # only named contact (15) + email (25) = 40, 0 for sector, 0 for buying signal
+    assert not any("sector: Fintech" in r for r in reasons2)
+    assert not any("Dental" in r for r in reasons2)
+
+    # Scout heuristic scoring isolation
+    scout = Scout(brain=None, state=state, config=cfg, env=SimpleNamespace())
+    pr = Prospect(title="Chief Information Security Officer", industry="Fintech", seniority="c_suite")
+    scout_score1 = scout._heuristic_score(pr, product_context=ctx1)
+    scout_score2 = scout._heuristic_score(pr, product_context=ctx2)
+
+    # Product 1 matches title (+25) and industry (+10), while Product 2 matches neither
+    assert scout_score1 > scout_score2
+    assert scout_score1 - scout_score2 >= 35
+
+
+# ── 17. Pipeline Passes Correct Product Context ──
+
+@pytest.mark.asyncio
+async def test_pipeline_context_propagation(state):
+    from sellbird.pipeline import run_profile_stage, run_prospecting
+    from types import SimpleNamespace
+
+    b_id = await state.add_business(BusinessProfile(name="Pipeline Test Corp"))
+    p_id = await state.add_product(Product(business_id=b_id, name="CloudProfiler"))
+    await state.add_icp(ICP(
+        product_id=p_id,
+        name="Profiler ICP",
+        target_industries=["Cloud Infrastructure"],
+        job_titles=["DevOps Lead"],
+        buying_signals=["Kubernetes Administrator"],
+    ))
+
+    cfg = SimpleNamespace(
+        product=SimpleNamespace(name="Default", description="Default"),
+        icp=SimpleNamespace(industries=["Generic"], titles=["Admin"], hiring_signals=[]),
+        channels=SimpleNamespace(),
+        compliance=SimpleNamespace(do_not_contact=[]),
+    )
+
+    # run_profile_stage with product_id executes without error
+    companies, obs_count, run_id = await run_profile_stage(state, limit=10, config=cfg, product_id=p_id)
+    assert isinstance(obs_count, int)
+
+    # run_prospecting with dry_run=True and product_id executes without error
+    rep = await run_prospecting(state, cfg, dry_run=True, product_id=p_id)
+    assert rep.skipped == "dry run"
+
+
+# ── 18. Legacy Single-Product Workflow Fallback ──
+
+@pytest.mark.asyncio
+async def test_legacy_single_product_workflow_fallback(state):
+    from sellbird.agents.analyst import Analyst
+    from sellbird.fit import company_fit
+    from types import SimpleNamespace
+
+    cfg = SimpleNamespace(
+        product=SimpleNamespace(name="LegacyTool", description="Legacy Solution", pricing="$99", key_benefits=["Fast"]),
+        icp=SimpleNamespace(industries=["Logistics"], titles=["Fleet Manager"], hiring_signals=["Dispatcher"]),
+        compliance=SimpleNamespace(do_not_contact=[]),
+    )
+
+    # Context resolution with None returns default without throwing
+    ctx = await resolve_product_context(state, None, config=cfg)
+    assert ctx is not None
+    assert ctx.product_name in ("LegacyTool", "Default Product")
+
+    # company_fit with product_context=None uses cfg.icp smoothly
+    company = {"id": "c_leg", "domain": "freight.example", "industry": "Logistics"}
+    prospects = [{"id": "p_leg", "first_name": "Tom", "title": "Fleet Manager", "email": "tom@freight.example", "email_status": "verified"}]
+    observations = [{"signal_code": "HIRING_ROLE", "value_text": "Hiring a Dispatcher"}]
+
+    score, reasons = company_fit(company, prospects, observations, cfg, product_context=None)
+    assert score >= 90
+    assert any("sector: Logistics" in r for r in reasons)
+    assert any("Fleet Manager" in r for r in reasons)
+
+    # Analyst runs without product_id
+    analyst = Analyst(state)
+    rep = await analyst.run()
+    assert "pipeline" in rep
+    assert "campaigns" in rep
