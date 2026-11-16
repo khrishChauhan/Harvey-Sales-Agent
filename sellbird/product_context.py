@@ -24,7 +24,15 @@ class ProductContext:
 
     @property
     def business_id(self) -> str:
-        return self.business.id
+        return self.business.id if self.business else ""
+
+    @property
+    def business_name(self) -> str:
+        return self.business.name if self.business else ""
+
+    @property
+    def brand_voice(self) -> str:
+        return self.business.brand_voice if self.business else ""
 
     @property
     def product_name(self) -> str:

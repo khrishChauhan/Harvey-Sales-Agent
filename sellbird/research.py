@@ -86,6 +86,33 @@ async def gather_company_research(
         product_id=product_id,
     )
 
+    # 0. Pull saved research dossier from SQLite
+    try:
+        saved_d = await state.get_research_dossier(company_id=company_id, product_id=product_id)
+        if saved_d:
+            raw_facts = saved_d.get("verified_facts")
+            if isinstance(raw_facts, str):
+                try:
+                    raw_facts = json.loads(raw_facts)
+                except Exception:
+                    raw_facts = []
+            if isinstance(raw_facts, list):
+                for rf in raw_facts:
+                    if isinstance(rf, dict):
+                        dossier.verified_facts.append(rf)
+            raw_urls = saved_d.get("source_urls")
+            if isinstance(raw_urls, str):
+                try:
+                    raw_urls = json.loads(raw_urls)
+                except Exception:
+                    raw_urls = []
+            if isinstance(raw_urls, list):
+                for u in raw_urls:
+                    if u and u not in dossier.source_urls:
+                        dossier.source_urls.append(u)
+    except Exception as e:
+        logger.debug(f"Could not load saved research dossier for {company_id}: {e}")
+
     # 1. Pull existing verified observations from SQLite
     obs_list = []
     try:

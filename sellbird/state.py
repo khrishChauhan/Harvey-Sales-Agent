@@ -1012,6 +1012,33 @@ class StateManager:
             )
             await db.commit()
 
+    async def update_prospect(self, prospect_id: str, **kwargs) -> bool:
+        """Update arbitrary columns on a prospect."""
+        if not kwargs:
+            return False
+        allowed_cols = {
+            "first_name", "last_name", "company", "title", "industry",
+            "email", "email_status", "status", "score", "product_id",
+            "icp_id", "timezone", "updated_at", "enriched_at"
+        }
+        updates = []
+        vals = []
+        for k, v in kwargs.items():
+            if k in allowed_cols:
+                updates.append(f"{k} = ?")
+                vals.append(v)
+        if not updates:
+            return False
+        if "updated_at" not in kwargs:
+            updates.append("updated_at = ?")
+            vals.append(_utcnow().isoformat())
+        vals.append(prospect_id)
+        sql = f"UPDATE prospects SET {', '.join(updates)} WHERE id = ?"
+        async with self._connect() as db:
+            await db.execute(sql, tuple(vals))
+            await db.commit()
+        return True
+
     async def undo_opt_out(self, prospect_id: str, details: dict | None = None) -> bool:
         """A human's undo of an opt-out: the one way off 'opted_out'.
 

@@ -423,9 +423,10 @@ function loadCurrentTab() {
     case 'conversations': loadConversations(); break;
     case 'activity': loadActivity(); break;
     case 'inboxes': loadInboxes(); break;
-    case 'usage': loadUsage(); break;
+    case 'usage': loadUsage(); loadLocalAIStatus(); break;
     case 'settings': loadSettings(); loadSendingModeCard(); break;
-    case 'company': loadCompany(); break;
+    case 'company': loadProductsAndBusinesses(); break;
+    case 'analytics': loadAnalytics(); break;
     case 'controls': loadSellbirdStatus(); loadLogs(); break;
   }
 }
@@ -2201,7 +2202,7 @@ const CONTACT_FILTERS = [
 
 async function loadProspects() {
   const el = document.getElementById('prospects-table');
-  const data = await api('/api/prospects');
+  const data = await api('/api/prospects' + (_prospectProductFilter ? '?product_id=' + encodeURIComponent(_prospectProductFilter) : ''));
   if (!data) { el.innerHTML = offlineState(); return; }
   _prospects = data;
   if (!data.length) {
@@ -2215,6 +2216,7 @@ async function loadProspects() {
         '<input class="form-input" id="contact-search" type="search" placeholder="Search name, company, email" ' +
         'aria-label="Search contacts" oninput="_contactQuery=this.value;renderContacts()"></label>' +
       '<div class="segmented" id="contact-filters" role="group" aria-label="Filter by status"></div>' +
+      '<div style="margin-left:auto;display:flex;align-items:center;gap:6px"><label class="hint" for="prospect-product-filter">Product:</label><select class="form-input" id="prospect-product-filter" style="width:auto;min-width:160px;height:32px;padding:2px 8px;font-size:var(--fs-ui)" onchange="_prospectProductFilter=this.value;loadProspects()"><option value="">All Products</option></select></div>' +
       '</div><div id="contact-rows"></div>';
     // A rebuild after an offline blip must show the search still applied.
     document.getElementById('contact-search').value = _contactQuery;
@@ -2269,7 +2271,7 @@ function renderContacts() {
         ? '<button class="btn btn-ghost btn-sm" onclick="toggleOptOut(' + i + ')" ' +
           'aria-expanded="' + (_optOut.id === p.id) + '" title="What made Sellbird stop emailing them">' +
           (p.status === 'opted_out' ? 'Why?' : 'Opt-out history') + '</button>' : '') +
-        '<button class="btn btn-ghost btn-sm row-action" onclick="fbProspect(' + i + ')" ' +
+        '<button class="btn btn-secondary btn-sm row-action" onclick="openProspectIntelligence(\'' + p.id + '\')" title="View intelligence, scoring factors & AI problem hook">Intelligence</button> ' + '<button class="btn btn-ghost btn-sm row-action" onclick="fbProspect(' + i + ')" ' +
         'title="Leave feedback on this contact">Feedback</button></div></td></tr>';
     if (_optOut.id === p.id) html += '<tr class="detail-row"><td colspan="8">' + optOutPanel(p) + '</td></tr>';
   }
@@ -3365,3 +3367,1044 @@ async function dismissProposedOffer() {
   d.addEventListener('close', () => { if (_inboxPoll) { clearInterval(_inboxPoll); _inboxPoll = null; } });
   d.addEventListener('click', e => { if (e.target === d) closeInboxDialog(); });
 })();
+
+
+// ══════════════════════════════════════════════════════════════════════════════
+// PHASE 4: MULTI-PRODUCT, SALES INTELLIGENCE & ANALYTICS EXTENSIONS
+// ══════════════════════════════════════════════════════════════════════════════
+
+let _pbTab = 'businesses';
+let _businesses = [], _products = [], _icps = [];
+let _activeProductId = null, _activeIcpId = null;
+let _prospectProductFilter = '';
+let _analyticsProductFilter = '';
+
+// ── Multi-Product and Business Management ────────────────────────────────────
+
+async function loadProductsAndBusinesses() {
+  const container = document.getElementById('pb-list-view');
+  if (!container) return;
+  container.innerHTML = '<p class="desc">Loading products and businesses...</p>';
+
+  const [bizData, prodData, activeProdData, activeIcpData] = await Promise.all([
+    api('/api/businesses'),
+    api('/api/products'),
+    api('/api/active-product'),
+    api('/api/active-icp'),
+  ]);
+
+  _businesses = bizData || [];
+  _products = prodData || [];
+  _activeProductId = activeProdData ? activeProdData.active_product_id : null;
+  _activeIcpId = activeIcpData ? activeIcpData.active_icp_id : null;
+
+  // Also collect all ICPs
+  const icpPromises = _products.map(p => api('/api/products/' + encodeURIComponent(p.id) + '/icps'));
+  const icpResults = await Promise.all(icpPromises);
+  _icps = [];
+  icpResults.forEach((list, idx) => {
+    if (Array.isArray(list)) {
+      list.forEach(icp => {
+        icp.product_name = _products[idx] ? _products[idx].name : '';
+        _icps.push(icp);
+      });
+    }
+  });
+
+  // Update Global Active Product selector
+  const activeSel = document.getElementById('global-active-product');
+  if (activeSel) {
+    if (!_products.length) {
+      activeSel.innerHTML = '<option value="">No products created yet</option>';
+    } else {
+      activeSel.innerHTML = _products.map(p => 
+        `<option value="${escHtml(p.id)}"${p.id === _activeProductId ? ' selected' : ''}>${escHtml(p.name)} (${escHtml(p.business_name || 'Business')})</option>`
+      ).join('');
+    }
+  }
+
+  // Update Active ICP display
+  const activeIcpEl = document.getElementById('active-icp-display');
+  if (activeIcpEl) {
+    const actIcp = _icps.find(i => i.id === _activeIcpId);
+    activeIcpEl.innerHTML = actIcp ? `Active ICP: <b>${escHtml(actIcp.name)}</b>` : 'No active ICP selected';
+  }
+
+  // Also sync prospect product dropdown if present
+  const prospectProdSel = document.getElementById('prospect-product-filter');
+  if (prospectProdSel) {
+    prospectProdSel.innerHTML = '<option value="">All Products</option>' + 
+      _products.map(p => `<option value="${escHtml(p.id)}"${p.id === _prospectProductFilter ? ' selected' : ''}>${escHtml(p.name)}</option>`).join('');
+  }
+
+  renderPBTab();
+}
+
+function switchPBTab(tab) {
+  _pbTab = tab;
+  ['businesses', 'products', 'icps', 'legacy'].forEach(t => {
+    const btn = document.getElementById('subtab-' + t);
+    if (btn) btn.classList.toggle('active', t === tab);
+  });
+
+  const pbView = document.getElementById('pb-tab-content');
+  const legacyView = document.getElementById('company-body');
+
+  if (tab === 'legacy') {
+    if (pbView) pbView.style.display = 'none';
+    if (legacyView) {
+      legacyView.style.display = 'block';
+      loadCompany();
+    }
+  } else {
+    if (legacyView) legacyView.style.display = 'none';
+    if (pbView) pbView.style.display = 'block';
+    renderPBTab();
+  }
+}
+
+function renderPBTab() {
+  const container = document.getElementById('pb-list-view');
+  if (!container) return;
+
+  if (_pbTab === 'businesses') {
+    if (!_businesses.length) {
+      container.innerHTML = `<div class="card" style="text-align:center;padding:var(--sp-6);">
+        <h3>No Business Profiles</h3>
+        <p class="desc">Create your organization profile or use Local AI to generate one.</p>
+        <div style="display:flex;justify-content:center;gap:var(--sp-2);margin-top:var(--sp-3);">
+          <button class="btn btn-primary" onclick="openBusinessModal()">Create Business Profile</button>
+        </div>
+      </div>`;
+      return;
+    }
+
+    let html = '<div class="table-card"><table class="nowrap"><thead><tr>' +
+      '<th>Name</th><th>Domain</th><th>Industry</th><th>Description</th><th>Created</th><th>Actions</th>' +
+      '</tr></thead><tbody>';
+
+    _businesses.forEach(b => {
+      html += `<tr>
+        <td><b>${escHtml(b.name)}</b></td>
+        <td><code>${escHtml(b.domain || 'N/A')}</code></td>
+        <td><span class="tag">${escHtml(b.industry || 'General')}</span></td>
+        <td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(b.description || '')}</td>
+        <td class="muted">${relTime(b.created_at)}</td>
+        <td>
+          <div class="cell-row">
+            <button class="btn btn-ghost btn-sm" onclick="openBusinessModal('${b.id}')">Edit</button>
+            <button class="btn btn-secondary btn-sm" onclick="openProductModal(null, '${b.id}')">+ Product</button>
+            <button class="btn btn-ghost btn-sm" style="color:var(--bad)" onclick="deleteBusiness('${b.id}')">Delete</button>
+          </div>
+        </td>
+      </tr>`;
+    });
+    html += '</tbody></table></div>';
+    container.innerHTML = html;
+
+  } else if (_pbTab === 'products') {
+    if (!_products.length) {
+      container.innerHTML = `<div class="card" style="text-align:center;padding:var(--sp-6);">
+        <h3>No Products Configured</h3>
+        <p class="desc">Add products to your business profiles to enable multi-product sales outreach.</p>
+        <div style="display:flex;justify-content:center;gap:var(--sp-2);margin-top:var(--sp-3);">
+          <button class="btn btn-primary" onclick="openProductModal()">Add New Product</button>
+        </div>
+      </div>`;
+      return;
+    }
+
+    let html = '<div style="display:grid;grid-template-columns:repeat(auto-fill, minmax(340px, 1fr));gap:var(--sp-4);">';
+    _products.forEach(p => {
+      const isActive = p.id === _activeProductId;
+      const features = Array.isArray(p.features) ? p.features : [];
+      const benefits = Array.isArray(p.benefits) ? p.benefits : [];
+      html += `<div class="card" style="${isActive ? 'border:2px solid var(--accent);background:var(--accent-soft);' : ''}">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;">
+          <div>
+            <h3 style="margin-bottom:2px;">${escHtml(p.name)}</h3>
+            <span class="hint">${escHtml(p.business_name || 'Business')}</span>
+          </div>
+          ${isActive ? '<span class="tag accent">Active Product</span>' : `<button class="btn btn-ghost btn-sm" onclick="changeActiveProduct('${p.id}')">Set Active</button>`}
+        </div>
+        <p class="desc" style="margin:var(--sp-2) 0;min-height:36px;">${escHtml(p.description || 'No description.')}</p>
+        <div style="font-size:var(--fs-ui);margin-bottom:var(--sp-2);">
+          <b>Pricing:</b> ${escHtml(p.pricing || 'Custom / Contact Sales')}<br>
+          <b>Offer Hook:</b> <span class="muted">${escHtml(p.offer_entry || 'Default call to action')}</span>
+        </div>
+        <div style="font-size:var(--fs-caption);color:var(--text-3);margin-bottom:var(--sp-3);">
+          ${features.length} Features &middot; ${benefits.length} Benefits &middot; ${Object.keys(p.objection_responses || {}).length} Objection Handlers
+        </div>
+        <div style="display:flex;gap:var(--sp-2);border-top:1px solid var(--line);padding-top:var(--sp-3);">
+          <button class="btn btn-secondary btn-sm" onclick="openProductModal('${p.id}')">Edit</button>
+          <button class="btn btn-ghost btn-sm" onclick="openIcpModal(null, '${p.id}')">+ ICP</button>
+          <button class="btn btn-ghost btn-sm" style="color:var(--bad);margin-left:auto" onclick="deleteProduct('${p.id}')">Delete</button>
+        </div>
+      </div>`;
+    });
+    html += '</div>';
+    container.innerHTML = html;
+
+  } else if (_pbTab === 'icps') {
+    if (!_icps.length) {
+      container.innerHTML = `<div class="card" style="text-align:center;padding:var(--sp-6);">
+        <h3>No Ideal Customer Profiles (ICPs)</h3>
+        <p class="desc">Define targeted ICPs or synthesize them using local AI for each product.</p>
+        <div style="display:flex;justify-content:center;gap:var(--sp-2);margin-top:var(--sp-3);">
+          <button class="btn btn-primary" onclick="openIcpModal()">Create Target ICP</button>
+        </div>
+      </div>`;
+      return;
+    }
+
+    let html = '<div class="table-card"><table class="nowrap"><thead><tr>' +
+      '<th>ICP Name</th><th>Product</th><th>Target Titles</th><th>Industries</th><th>Company Sizes</th><th>Actions</th>' +
+      '</tr></thead><tbody>';
+
+    _icps.forEach(icp => {
+      const isActive = icp.id === _activeIcpId;
+      const titles = (Array.isArray(icp.target_titles) ? icp.target_titles : []).join(', ');
+      const inds = (Array.isArray(icp.target_industries) ? icp.target_industries : []).join(', ');
+      const sizes = (Array.isArray(icp.company_sizes) ? icp.company_sizes : []).join(', ');
+
+      html += `<tr>
+        <td>
+          <b>${escHtml(icp.name)}</b>
+          ${isActive ? ' <span class="tag accent">Active ICP</span>' : ''}
+        </td>
+        <td>${escHtml(icp.product_name || 'N/A')}</td>
+        <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(titles || 'All')}</td>
+        <td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${escHtml(inds || 'All')}</td>
+        <td>${escHtml(sizes || 'Any')}</td>
+        <td>
+          <div class="cell-row">
+            ${!isActive ? `<button class="btn btn-ghost btn-sm" onclick="changeActiveIcp('${icp.id}')">Set Active</button>` : ''}
+            <button class="btn btn-ghost btn-sm" onclick="openIcpModal('${icp.id}')">Edit</button>
+            <button class="btn btn-ghost btn-sm" style="color:var(--bad)" onclick="deleteIcp('${icp.id}')">Delete</button>
+          </div>
+        </td>
+      </tr>`;
+    });
+    html += '</tbody></table></div>';
+    container.innerHTML = html;
+  }
+}
+
+async function changeActiveProduct(productId) {
+  if (!productId) return;
+  const res = await api('/api/active-product', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({product_id: productId}),
+  });
+  if (res && res.success) {
+    _activeProductId = productId;
+    showToast('Active product set to ' + (res.product_name || productId), 'success');
+    loadProductsAndBusinesses();
+  } else {
+    showToast((res && res.message) || 'Failed to update active product.', 'error');
+  }
+}
+
+async function changeActiveIcp(icpId) {
+  if (!icpId) return;
+  const res = await api('/api/active-icp', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({icp_id: icpId}),
+  });
+  if (res && res.success) {
+    _activeIcpId = icpId;
+    showToast('Active ICP updated.', 'success');
+    loadProductsAndBusinesses();
+  } else {
+    showToast((res && res.message) || 'Failed to update active ICP.', 'error');
+  }
+}
+
+// ── Business Modal Handlers ──────────────────────────────────────────────────
+
+function openBusinessModal(bizId) {
+  const d = document.getElementById('business-modal');
+  const idEl = document.getElementById('bm-id');
+  const nameEl = document.getElementById('bm-name');
+  const domEl = document.getElementById('bm-domain');
+  const indEl = document.getElementById('bm-industry');
+  const descEl = document.getElementById('bm-desc');
+  const badgeEl = document.getElementById('bm-ai-badge');
+  const titleEl = document.getElementById('bm-title');
+
+  if (badgeEl) badgeEl.style.display = 'none';
+
+  if (bizId) {
+    const biz = _businesses.find(b => b.id === bizId);
+    if (!biz) return;
+    idEl.value = biz.id;
+    nameEl.value = biz.name || '';
+    domEl.value = biz.domain || '';
+    indEl.value = biz.industry || '';
+    descEl.value = biz.description || '';
+    titleEl.textContent = 'Edit Business Profile';
+  } else {
+    idEl.value = '';
+    nameEl.value = '';
+    domEl.value = '';
+    indEl.value = '';
+    descEl.value = '';
+    titleEl.textContent = 'Create Business Profile';
+  }
+  if (!d.open) d.showModal();
+}
+
+function closeBusinessModal() {
+  const d = document.getElementById('business-modal');
+  if (d.open) d.close();
+}
+
+async function generateBusinessWithAI() {
+  const btn = document.getElementById('btn-gen-biz');
+  const domEl = document.getElementById('bm-domain');
+  const nameEl = document.getElementById('bm-name');
+  const indEl = document.getElementById('bm-industry');
+  const descEl = document.getElementById('bm-desc');
+  const badgeEl = document.getElementById('bm-ai-badge');
+
+  const domain = domEl.value.trim() || nameEl.value.trim() || 'example.com';
+  btn.disabled = true;
+  btn.textContent = 'Generating with Local AI...';
+
+  const res = await api('/api/businesses/generate', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({domain: domain, prompt: 'Generate professional business profile'}),
+  });
+
+  btn.disabled = false;
+  btn.textContent = 'Generate with AI';
+
+  if (res && res.success && res.business) {
+    nameEl.value = res.business.name || nameEl.value;
+    indEl.value = res.business.industry || indEl.value;
+    descEl.value = res.business.description || descEl.value;
+    if (badgeEl) badgeEl.style.display = 'block';
+    showToast('Business profile generated by Local AI. Please review and edit before saving.', 'success');
+  } else {
+    showToast(failMsg(res, 'Local AI generation failed. Is Ollama running?'), 'error');
+  }
+}
+
+async function saveBusinessProfile() {
+  const id = document.getElementById('bm-id').value;
+  const name = document.getElementById('bm-name').value.trim();
+  const domain = document.getElementById('bm-domain').value.trim();
+  const industry = document.getElementById('bm-industry').value.trim();
+  const description = document.getElementById('bm-desc').value.trim();
+
+  if (!name) {
+    showToast('Business name is required.', 'error');
+    return;
+  }
+
+  const payload = {name, domain, industry, description};
+  const path = id ? `/api/businesses/${encodeURIComponent(id)}` : '/api/businesses';
+  const method = id ? 'PUT' : 'POST';
+
+  const res = await api(path, {
+    method,
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload),
+  });
+
+  if (res && res.success) {
+    showToast(id ? 'Business profile updated.' : 'Business profile created.', 'success');
+    closeBusinessModal();
+    loadProductsAndBusinesses();
+  } else {
+    showToast(failMsg(res, 'Could not save business profile.'), 'error');
+  }
+}
+
+async function deleteBusiness(bizId) {
+  if (!confirm('Are you sure you want to delete this business profile? Associated products and ICPs may also be affected.')) return;
+  const res = await api('/api/businesses/' + encodeURIComponent(bizId), {method: 'DELETE'});
+  if (res && res.success) {
+    showToast('Business profile deleted.', 'success');
+    loadProductsAndBusinesses();
+  } else {
+    showToast(failMsg(res, 'Could not delete business profile.'), 'error');
+  }
+}
+
+// ── Product Modal Handlers ───────────────────────────────────────────────────
+
+function openProductModal(productId, defaultBizId) {
+  const d = document.getElementById('product-modal');
+  const idEl = document.getElementById('pm-id');
+  const bizSel = document.getElementById('pm-business-id');
+  const nameEl = document.getElementById('pm-name');
+  const descEl = document.getElementById('pm-desc');
+  const priceEl = document.getElementById('pm-pricing');
+  const offerEl = document.getElementById('pm-offer');
+  const featEl = document.getElementById('pm-features');
+  const benEl = document.getElementById('pm-benefits');
+  const uspEl = document.getElementById('pm-usps');
+  const objEl = document.getElementById('pm-objections');
+  const titleEl = document.getElementById('pm-title');
+
+  bizSel.innerHTML = _businesses.map(b => `<option value="${escHtml(b.id)}">${escHtml(b.name)}</option>`).join('');
+
+  if (productId) {
+    const p = _products.find(x => x.id === productId);
+    if (!p) return;
+    idEl.value = p.id;
+    bizSel.value = p.business_id;
+    nameEl.value = p.name || '';
+    descEl.value = p.description || '';
+    priceEl.value = p.pricing || '';
+    offerEl.value = p.offer_entry || '';
+    featEl.value = (Array.isArray(p.features) ? p.features : []).join('\n');
+    benEl.value = (Array.isArray(p.benefits) ? p.benefits : []).join('\n');
+    uspEl.value = (Array.isArray(p.usps) ? p.usps : []).join('\n');
+    objEl.value = Object.entries(p.objection_responses || {}).map(([k, v]) => `${k}: ${v}`).join('\n');
+    titleEl.textContent = 'Edit Product Details';
+  } else {
+    idEl.value = '';
+    if (defaultBizId) bizSel.value = defaultBizId;
+    nameEl.value = '';
+    descEl.value = '';
+    priceEl.value = '';
+    offerEl.value = '';
+    featEl.value = '';
+    benEl.value = '';
+    uspEl.value = '';
+    objEl.value = '';
+    titleEl.textContent = 'Add New Product';
+  }
+
+  if (!d.open) d.showModal();
+}
+
+function closeProductModal() {
+  const d = document.getElementById('product-modal');
+  if (d.open) d.close();
+}
+
+async function saveProduct() {
+  const id = document.getElementById('pm-id').value;
+  const business_id = document.getElementById('pm-business-id').value;
+  const name = document.getElementById('pm-name').value.trim();
+  const description = document.getElementById('pm-desc').value.trim();
+  const pricing = document.getElementById('pm-pricing').value.trim();
+  const offer_entry = document.getElementById('pm-offer').value.trim();
+
+  const features = document.getElementById('pm-features').value.split('\n').map(s => s.trim()).filter(Boolean);
+  const benefits = document.getElementById('pm-benefits').value.split('\n').map(s => s.trim()).filter(Boolean);
+  const usps = document.getElementById('pm-usps').value.split('\n').map(s => s.trim()).filter(Boolean);
+
+  const objections = {};
+  document.getElementById('pm-objections').value.split('\n').forEach(line => {
+    const idx = line.indexOf(':');
+    if (idx > 0) objections[line.slice(0, idx).trim()] = line.slice(idx + 1).trim();
+  });
+
+  if (!name) {
+    showToast('Product name is required.', 'error');
+    return;
+  }
+  if (!business_id) {
+    showToast('Please select a business profile.', 'error');
+    return;
+  }
+
+  const payload = {
+    name, description, pricing, offer_entry, features, benefits, usps,
+    objection_responses: objections,
+  };
+
+  const path = id ? `/api/products/${encodeURIComponent(id)}` : `/api/businesses/${encodeURIComponent(business_id)}/products`;
+  const method = id ? 'PUT' : 'POST';
+
+  const res = await api(path, {
+    method,
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload),
+  });
+
+  if (res && res.success) {
+    showToast(id ? 'Product updated.' : 'Product created.', 'success');
+    closeProductModal();
+    loadProductsAndBusinesses();
+  } else {
+    showToast(failMsg(res, 'Could not save product.'), 'error');
+  }
+}
+
+async function deleteProduct(productId) {
+  if (!confirm('Are you sure you want to delete this product?')) return;
+  const res = await api('/api/products/' + encodeURIComponent(productId), {method: 'DELETE'});
+  if (res && res.success) {
+    showToast('Product deleted.', 'success');
+    loadProductsAndBusinesses();
+  } else {
+    showToast(failMsg(res, 'Could not delete product.'), 'error');
+  }
+}
+
+// ── ICP Modal Handlers ───────────────────────────────────────────────────────
+
+function openIcpModal(icpId, defaultProdId) {
+  const d = document.getElementById('icp-modal');
+  const idEl = document.getElementById('im-id');
+  const prodSel = document.getElementById('im-product-id');
+  const nameEl = document.getElementById('im-name');
+  const indEl = document.getElementById('im-industries');
+  const sizeEl = document.getElementById('im-sizes');
+  const geoEl = document.getElementById('im-geos');
+  const titleInput = document.getElementById('im-titles');
+  const personaEl = document.getElementById('im-personas');
+  const painEl = document.getElementById('im-pains');
+  const sigEl = document.getElementById('im-signals');
+  const badgeEl = document.getElementById('im-ai-badge');
+  const titleEl = document.getElementById('im-title');
+
+  if (badgeEl) badgeEl.style.display = 'none';
+
+  prodSel.innerHTML = _products.map(p => `<option value="${escHtml(p.id)}">${escHtml(p.name)}</option>`).join('');
+
+  if (icpId) {
+    const icp = _icps.find(x => x.id === icpId);
+    if (!icp) return;
+    idEl.value = icp.id;
+    prodSel.value = icp.product_id;
+    nameEl.value = icp.name || '';
+    indEl.value = (Array.isArray(icp.target_industries) ? icp.target_industries : []).join(', ');
+    sizeEl.value = (Array.isArray(icp.company_sizes) ? icp.company_sizes : []).join(', ');
+    geoEl.value = (Array.isArray(icp.geographies) ? icp.geographies : []).join(', ');
+    titleInput.value = (Array.isArray(icp.target_titles) ? icp.target_titles : []).join(', ');
+    personaEl.value = typeof icp.buyer_personas === 'string' ? icp.buyer_personas : JSON.stringify(icp.buyer_personas || '');
+    painEl.value = (Array.isArray(icp.pain_points) ? icp.pain_points : []).join('\n');
+    sigEl.value = (Array.isArray(icp.buying_signals) ? icp.buying_signals : []).join('\n');
+    titleEl.textContent = 'Edit Ideal Customer Profile';
+  } else {
+    idEl.value = '';
+    if (defaultProdId) prodSel.value = defaultProdId;
+    nameEl.value = '';
+    indEl.value = '';
+    sizeEl.value = '';
+    geoEl.value = '';
+    titleInput.value = '';
+    personaEl.value = '';
+    painEl.value = '';
+    sigEl.value = '';
+    titleEl.textContent = 'Create Ideal Customer Profile';
+  }
+
+  if (!d.open) d.showModal();
+}
+
+function closeIcpModal() {
+  const d = document.getElementById('icp-modal');
+  if (d.open) d.close();
+}
+
+async function generateIcpWithAI() {
+  const btn = document.getElementById('btn-gen-icp');
+  const prodId = document.getElementById('im-product-id').value;
+  const nameEl = document.getElementById('im-name');
+  const indEl = document.getElementById('im-industries');
+  const sizeEl = document.getElementById('im-sizes');
+  const geoEl = document.getElementById('im-geos');
+  const titleInput = document.getElementById('im-titles');
+  const personaEl = document.getElementById('im-personas');
+  const painEl = document.getElementById('im-pains');
+  const sigEl = document.getElementById('im-signals');
+  const badgeEl = document.getElementById('im-ai-badge');
+
+  if (!prodId) {
+    showToast('Please select a product first.', 'error');
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Synthesizing with Local AI...';
+
+  const res = await api('/api/icps/generate', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({product_id: prodId}),
+  });
+
+  btn.disabled = false;
+  btn.textContent = 'Generate with AI';
+
+  if (res && res.success && res.icp) {
+    const icp = res.icp;
+    nameEl.value = icp.name || nameEl.value || 'AI Generated ICP';
+    indEl.value = (icp.target_industries || []).join(', ');
+    sizeEl.value = (icp.company_sizes || []).join(', ');
+    geoEl.value = (icp.geographies || []).join(', ');
+    titleInput.value = (icp.target_titles || []).join(', ');
+    personaEl.value = typeof icp.buyer_personas === 'string' ? icp.buyer_personas : JSON.stringify(icp.buyer_personas || '');
+    painEl.value = (icp.pain_points || []).join('\n');
+    sigEl.value = (icp.buying_signals || []).join('\n');
+
+    if (badgeEl) badgeEl.style.display = 'block';
+    showToast('ICP generated by Local AI. Please review and edit before saving.', 'success');
+  } else {
+    showToast(failMsg(res, 'Local AI ICP generation failed. Is Ollama running?'), 'error');
+  }
+}
+
+async function saveIcp() {
+  const id = document.getElementById('im-id').value;
+  const product_id = document.getElementById('im-product-id').value;
+  const name = document.getElementById('im-name').value.trim();
+
+  if (!name) {
+    showToast('ICP name is required.', 'error');
+    return;
+  }
+  if (!product_id) {
+    showToast('Please select a product.', 'error');
+    return;
+  }
+
+  const parseList = str => str.split(',').map(s => s.trim()).filter(Boolean);
+  const parseLines = str => str.split('\n').map(s => s.trim()).filter(Boolean);
+
+  const payload = {
+    name,
+    target_industries: parseList(document.getElementById('im-industries').value),
+    company_sizes: parseList(document.getElementById('im-sizes').value),
+    geographies: parseList(document.getElementById('im-geos').value),
+    target_titles: parseList(document.getElementById('im-titles').value),
+    buyer_personas: document.getElementById('im-personas').value.trim(),
+    pain_points: parseLines(document.getElementById('im-pains').value),
+    buying_signals: parseLines(document.getElementById('im-signals').value),
+  };
+
+  const path = id ? `/api/icps/${encodeURIComponent(id)}` : `/api/products/${encodeURIComponent(product_id)}/icps`;
+  const method = id ? 'PUT' : 'POST';
+
+  const res = await api(path, {
+    method,
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(payload),
+  });
+
+  if (res && res.success) {
+    showToast(id ? 'ICP updated.' : 'ICP created.', 'success');
+    closeIcpModal();
+    loadProductsAndBusinesses();
+  } else {
+    showToast(failMsg(res, 'Could not save ICP.'), 'error');
+  }
+}
+
+async function deleteIcp(icpId) {
+  if (!confirm('Are you sure you want to delete this ICP?')) return;
+  const res = await api('/api/icps/' + encodeURIComponent(icpId), {method: 'DELETE'});
+  if (res && res.success) {
+    showToast('ICP deleted.', 'success');
+    loadProductsAndBusinesses();
+  } else {
+    showToast(failMsg(res, 'Could not delete ICP.'), 'error');
+  }
+}
+
+// ── Prospect Intelligence Drawer ─────────────────────────────────────────────
+
+async function openProspectIntelligence(prospectId) {
+  const d = document.getElementById('intel-modal');
+  const bodyEl = document.getElementById('intel-modal-body');
+  const titleEl = document.getElementById('intel-modal-title');
+  const subEl = document.getElementById('intel-modal-sub');
+  const footEl = document.getElementById('intel-modal-foot');
+
+  if (!d.open) d.showModal();
+  bodyEl.innerHTML = '<div style="padding:var(--sp-6);text-align:center;">Analyzing prospect evidence, score breakdown and AI hooks...</div>';
+
+  const intel = await api('/api/prospects/' + encodeURIComponent(prospectId) + '/intelligence');
+  if (!intel || !intel.success) {
+    bodyEl.innerHTML = `<div class="notice bad">Could not load sales intelligence: ${escHtml(intel ? intel.message : 'Network error')}</div>`;
+    return;
+  }
+
+  const p = intel.prospect || {};
+  const isQualified = (intel.score || 0) >= 60;
+  const scoreClass = isQualified ? 'good' : (intel.score >= 40 ? 'wait' : 'bad');
+  const simPct = Math.round((intel.semantic_similarity || 0) * 100);
+
+  titleEl.textContent = `${p.first_name || ''} ${p.last_name || ''} — Intelligence`;
+  subEl.innerHTML = `${escHtml(p.title || 'Role')} at <b>${escHtml(p.company || 'Company')}</b> &middot; Product: <b>${escHtml(intel.product_name || 'Default')}</b>`;
+
+  let factsHtml = '';
+  if (intel.verified_facts && intel.verified_facts.length) {
+    intel.verified_facts.forEach(f => {
+      factsHtml += `<div class="evidence-card">
+        <div>${escHtml(f.content)}</div>
+        <div class="evidence-source">
+          ${f.source_url ? `<a href="${safeHref(f.source_url)}" target="_blank" rel="noopener" style="text-decoration:underline;">${escHtml(f.source_url)}</a> &middot; ` : ''}
+          ${f.created_at ? relTime(f.created_at) : 'verified'}
+        </div>
+      </div>`;
+    });
+  } else {
+    factsHtml = '<p class="desc">No verified company dossier facts gathered yet.</p>';
+  }
+
+  let signalsHtml = '';
+  if (intel.buying_signals && intel.buying_signals.length) {
+    intel.buying_signals.forEach(s => {
+      const conf = s.confidence || 'medium';
+      const confBadge = conf === 'high' ? 'good' : (conf === 'medium' ? 'accent' : 'idle');
+      signalsHtml += `<div class="evidence-card">
+        <div style="display:flex;justify-content:space-between;align-items:center;">
+          <b>${escHtml(s.signal_code || 'Signal')}</b>
+          <span class="tag ${confBadge}">${escHtml(conf)} confidence</span>
+        </div>
+        ${s.evidence ? `<div style="font-size:var(--fs-caption);color:var(--text-2);margin-top:4px;">"${escHtml(s.evidence)}"</div>` : ''}
+      </div>`;
+    });
+  } else {
+    signalsHtml = '<p class="desc">No buying signals detected for this account.</p>';
+  }
+
+  const breakdown = intel.score_breakdown || {};
+  const withholdNotice = breakdown.withheld_reason 
+    ? `<div class="notice wait" style="font-size:var(--fs-caption);padding:6px 10px;margin-top:8px;">${escHtml(breakdown.withheld_reason)}</div>` 
+    : '';
+
+  bodyEl.innerHTML = `
+    <div style="display:flex;align-items:center;justify-content:space-between;background:var(--surface-2);border-radius:var(--r-md);padding:var(--sp-3) var(--sp-4);margin-bottom:var(--sp-4);">
+      <div style="display:flex;align-items:center;gap:var(--sp-4);">
+        <div>
+          <div style="font-size:var(--fs-caption);color:var(--text-3);text-transform:uppercase;">Overall Score</div>
+          <div style="font-size:1.75rem;font-weight:700;color:var(--${scoreClass});">${intel.score} <span style="font-size:var(--fs-ui);font-weight:400;color:var(--text-3)">/ 100</span></div>
+        </div>
+        <div>
+          <span class="tag ${scoreClass}">${isQualified ? 'Qualified Prospect' : 'Unqualified'}</span>
+        </div>
+      </div>
+      <div style="text-align:right;">
+        <div style="font-size:var(--fs-caption);color:var(--text-3);text-transform:uppercase;">Semantic ICP Match</div>
+        <div style="font-size:1.25rem;font-weight:600;">${simPct}%</div>
+        <span class="badge-ai" style="margin-top:2px;">${escHtml(intel.similarity_source || 'all-MiniLM-L6-v2')}</span>
+      </div>
+    </div>
+
+    <div class="intel-grid">
+      <!-- Left Column: Scoring & Problem Hook -->
+      <div>
+        <div class="subhead" style="margin-top:0;">Explainable Scoring Factors</div>
+        <div class="card" style="margin-bottom:var(--sp-4);">
+          <div class="score-breakdown-row"><span>Industry Fit</span> <b>${breakdown.industry_fit || 0} / 20</b></div>
+          <div class="score-breakdown-row"><span>Job Title Fit</span> <b>${breakdown.job_title_fit || 0} / 30</b></div>
+          <div class="score-breakdown-row"><span>Email Deliverability</span> <b>${breakdown.email_deliverability || 0} / 25</b></div>
+          <div class="score-breakdown-row"><span>Buying Signals</span> <b>${breakdown.buying_signals || 0} / 25</b></div>
+          <div class="score-breakdown-row"><span>Semantic ICP Boost</span> <b>+${breakdown.semantic_icp_boost || 0} / 15</b></div>
+          ${withholdNotice}
+        </div>
+
+        <div class="subhead">AI Problem Hook <span class="badge-ai">AI Interpretation</span></div>
+        <div class="card">
+          <p style="font-size:var(--fs-ui);line-height:1.6;margin-bottom:var(--sp-2);">
+            ${escHtml(intel.problem_statement || 'No specific problem hook synthesized yet.')}
+          </p>
+          <div class="hint" style="font-size:var(--fs-caption);">
+            Synthesized by local Ollama (qwen3:4b) from verified company signals. Never treat AI interpretations as verified facts.
+          </div>
+        </div>
+      </div>
+
+      <!-- Right Column: Verified Facts & Buying Signals -->
+      <div>
+        <div class="subhead" style="margin-top:0;">Verified Evidence <span class="badge-verified">Verified Fact</span></div>
+        <div class="card" style="margin-bottom:var(--sp-4);max-height:240px;overflow-y:auto;">
+          ${factsHtml}
+        </div>
+
+        <div class="subhead">Detected Buying Signals</div>
+        <div class="card" style="max-height:220px;overflow-y:auto;">
+          ${signalsHtml}
+        </div>
+      </div>
+    </div>
+  `;
+
+  footEl.innerHTML = `
+    <button class="btn btn-secondary" onclick="reScoreProspect('${prospectId}')">Re-Calculate Score</button>
+    <button class="btn btn-primary" onclick="openEmailDraft('${prospectId}')">Draft Personalized Email</button>
+    <button class="btn btn-ghost" onclick="closeIntelModal()">Close</button>
+  `;
+}
+
+function closeIntelModal() {
+  const d = document.getElementById('intel-modal');
+  if (d.open) d.close();
+}
+
+async function reScoreProspect(prospectId) {
+  const res = await api('/api/prospects/' + encodeURIComponent(prospectId) + '/score', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+  });
+  if (res && res.success) {
+    showToast('Prospect score re-calculated: ' + res.score + ' / 100', 'success');
+    openProspectIntelligence(prospectId);
+    loadProspects();
+  } else {
+    showToast(failMsg(res, 'Could not score prospect.'), 'error');
+  }
+}
+
+// ── Email Draft & Staging Handlers ───────────────────────────────────────────
+
+async function openEmailDraft(prospectId) {
+  showToast('Synthesizing personalized email draft via local Ollama...', 'info');
+  const res = await api('/api/prospects/' + encodeURIComponent(prospectId) + '/generate-email', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+  });
+
+  if (!res || !res.success) {
+    showToast(failMsg(res, 'Could not generate email draft. Is Ollama running?'), 'error');
+    return;
+  }
+
+  const d = document.getElementById('email-modal');
+  const idEl = document.getElementById('email-modal-prospect-id');
+  const subjEl = document.getElementById('email-modal-subj');
+  const bodyEl = document.getElementById('email-modal-body-input');
+  const subHeadEl = document.getElementById('email-modal-sub');
+
+  idEl.value = prospectId;
+  subjEl.value = res.subject || '';
+  bodyEl.value = res.body || '';
+  subHeadEl.textContent = `Draft for ${res.prospect_name || 'Prospect'} &middot; Product: ${res.product_name || 'Product'}`;
+
+  if (!d.open) d.showModal();
+}
+
+function closeEmailModal() {
+  const d = document.getElementById('email-modal');
+  if (d.open) d.close();
+}
+
+async function submitStageEmail() {
+  const prospectId = document.getElementById('email-modal-prospect-id').value;
+  const subject = document.getElementById('email-modal-subj').value.trim();
+  const body = document.getElementById('email-modal-body-input').value.trim();
+  const btn = document.getElementById('email-modal-stage-btn');
+
+  if (!subject || !body) {
+    showToast('Subject and body cannot be empty.', 'error');
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Staging to Outbox...';
+
+  const res = await api('/api/prospects/' + encodeURIComponent(prospectId) + '/stage-email', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({subject, body}),
+  });
+
+  btn.disabled = false;
+  btn.textContent = 'Stage to Outbox (Approve Later)';
+
+  if (res && res.success) {
+    showToast('Email draft staged to Outbox as pending_review. Human approval required before sending.', 'success');
+    closeEmailModal();
+    closeIntelModal();
+    loadProspects();
+  } else {
+    showToast(failMsg(res, 'Could not stage email draft.'), 'error');
+  }
+}
+
+// ── Sales Analytics ──────────────────────────────────────────────────────────
+
+async function loadAnalytics(productId = '') {
+  _analyticsProductFilter = productId;
+  const container = document.getElementById('analytics-content');
+  if (!container) return;
+  container.innerHTML = '<p class="desc">Calculating multi-product sales intelligence metrics...</p>';
+
+  const [data, prodData] = await Promise.all([
+    api('/api/analytics' + (productId ? '?product_id=' + encodeURIComponent(productId) : '')),
+    api('/api/products'),
+  ]);
+
+  if (!data || !data.success) {
+    container.innerHTML = '<div class="notice bad">Failed to load analytics data.</div>';
+    return;
+  }
+
+  // Populate product filter dropdown
+  const filterSel = document.getElementById('analytics-product-filter');
+  if (filterSel && prodData) {
+    filterSel.innerHTML = '<option value="">All Products</option>' +
+      prodData.map(p => `<option value="${escHtml(p.id)}"${p.id === productId ? ' selected' : ''}>${escHtml(p.name)}</option>`).join('');
+  }
+
+  const kpis = [
+    {label: 'Total Prospects', val: data.total_prospects, sub: 'In local SQLite database'},
+    {label: 'Qualified Prospects', val: data.qualified_prospects, sub: `${data.total_prospects ? Math.round((data.qualified_prospects/data.total_prospects)*100) : 0}% qualification rate`},
+    {label: 'Staged for Review', val: data.staged_emails, sub: 'Waiting in Outbox'},
+    {label: 'Emails Sent', val: data.sent_emails, sub: 'Dispatched through connected inboxes'},
+  ];
+
+  let kpisHtml = '<div class="stats-grid" style="margin-bottom:var(--sp-5);">';
+  kpis.forEach(k => {
+    kpisHtml += `<div class="stat-card">
+      <div class="label">${escHtml(k.label)}</div>
+      <div class="val">${k.val}</div>
+      <div class="sub">${escHtml(k.sub)}</div>
+    </div>`;
+  });
+  kpisHtml += '</div>';
+
+  // Conversion Funnel
+  const conv = data.conversion_rates || {};
+  let funnelHtml = `<div class="card" style="margin-bottom:var(--sp-5);">
+    <div class="subhead" style="margin-top:0;">Pipeline Conversion Velocity</div>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit, minmax(200px, 1fr));gap:var(--sp-3);padding-top:var(--sp-2);">
+      <div class="hardware-item">
+        <div class="lbl">Prospect &rarr; Contacted</div>
+        <div class="val">${conv.prospect_to_contacted || 0}%</div>
+      </div>
+      <div class="hardware-item">
+        <div class="lbl">Contacted &rarr; Replied</div>
+        <div class="val">${conv.contacted_to_replied || 0}%</div>
+      </div>
+      <div class="hardware-item">
+        <div class="lbl">Replied &rarr; Meeting</div>
+        <div class="val">${conv.replied_to_meeting || 0}%</div>
+      </div>
+    </div>
+  </div>`;
+
+  // Product breakdown table
+  let prodTableHtml = `<div class="subhead">Performance by Product</div>
+  <div class="table-card" style="margin-bottom:var(--sp-5);">
+    <table class="nowrap"><thead><tr>
+      <th>Product</th><th>Business</th><th>Prospects</th><th>Qualified (>=60)</th><th>Outbox Staged</th><th>Sent</th><th>Reply Rate</th>
+    </tr></thead><tbody>`;
+
+  (data.product_breakdown || []).forEach(pb => {
+    prodTableHtml += `<tr>
+      <td><b>${escHtml(pb.product_name)}</b></td>
+      <td>${escHtml(pb.business_name || 'Business')}</td>
+      <td>${pb.prospects_count}</td>
+      <td><span class="tag good">${pb.qualified_count}</span></td>
+      <td>${pb.staged_count}</td>
+      <td>${pb.sent_count}</td>
+      <td>${pb.conversion_rate}%</td>
+    </tr>`;
+  });
+  prodTableHtml += '</tbody></table></div>';
+
+  // Pipeline Stages & Signals Grid
+  let stagesHtml = '<div class="card"><div class="subhead" style="margin-top:0;">Pipeline Stages</div>';
+  const stages = Object.entries(data.pipeline_stages || {});
+  if (stages.length) {
+    stagesHtml += '<div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:var(--sp-2);">';
+    stages.forEach(([stage, count]) => {
+      stagesHtml += `<div class="score-breakdown-row"><span>${escHtml(stage)}</span> <b>${count}</b></div>`;
+    });
+    stagesHtml += '</div>';
+  } else {
+    stagesHtml += '<p class="desc">No stage telemetry yet.</p>';
+  }
+  stagesHtml += '</div>';
+
+  let signalsHtml = '<div class="card"><div class="subhead" style="margin-top:0;">Buying Signal Distribution</div>';
+  const signals = Object.entries(data.buying_signals_distribution || {});
+  if (signals.length) {
+    signalsHtml += '<div style="display:grid;grid-template-columns:repeat(2, 1fr);gap:var(--sp-2);">';
+    signals.forEach(([sig, count]) => {
+      signalsHtml += `<div class="score-breakdown-row"><span>${escHtml(sig)}</span> <b>${count}</b></div>`;
+    });
+    signalsHtml += '</div>';
+  } else {
+    signalsHtml += '<p class="desc">No buying signals detected in the pipeline yet.</p>';
+  }
+  signalsHtml += '</div>';
+
+  container.innerHTML = kpisHtml + funnelHtml + prodTableHtml +
+    `<div class="intel-grid">${stagesHtml}${signalsHtml}</div>`;
+}
+
+// ── Local AI & Hardware Status ───────────────────────────────────────────────
+
+async function loadLocalAIStatus() {
+  const card = document.getElementById('local-ai-hardware-card');
+  if (!card) return;
+
+  const data = await api('/api/system/ai-status');
+  if (!data || !data.success) {
+    card.innerHTML = '<div class="notice bad">Could not fetch Local AI engine telemetry.</div>';
+    return;
+  }
+
+  const ollamaOnline = data.ollama_available;
+  const hw = data.hardware || {};
+  const telem = data.telemetry || {};
+
+  let logsHtml = '';
+  if (telem.recent_logs && telem.recent_logs.length) {
+    logsHtml = '<div class="table-card" style="margin-top:var(--sp-3);"><table class="nowrap"><thead><tr>' +
+      '<th>Model</th><th>Duration</th><th>Tokens</th><th>Timestamp</th>' +
+      '</tr></thead><tbody>' +
+      telem.recent_logs.map(l => `<tr>
+        <td><code>${escHtml(l.model || 'qwen3:4b')}</code></td>
+        <td>${l.duration_ms ? l.duration_ms + ' ms' : 'N/A'}</td>
+        <td>${(l.prompt_tokens || 0) + (l.completion_tokens || 0)}</td>
+        <td class="muted">${relTime(l.created_at)}</td>
+      </tr>`).join('') +
+      '</tbody></table></div>';
+  } else {
+    logsHtml = '<div class="desc" style="margin-top:var(--sp-2);">No local inference queries logged yet.</div>';
+  }
+
+  card.innerHTML = `
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:var(--sp-3);">
+      <div>
+        <h3 style="margin-bottom:2px;">Local AI Engine &amp; Hardware Telemetry</h3>
+        <span class="hint">100% offline local inference &middot; Zero external cloud LLM dependencies</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <span class="status-dot ${ollamaOnline ? 'active' : 'stopped'}"></span>
+        <b>${ollamaOnline ? 'Ollama Online' : 'Ollama Offline'}</b>
+      </div>
+    </div>
+
+    <div class="hardware-card" style="margin-bottom:var(--sp-4);">
+      <div class="hardware-item">
+        <div class="lbl">Primary LLM</div>
+        <div class="val">${escHtml(data.active_model || 'qwen3:4b')}</div>
+        <div class="hint" style="font-size:11px;">Apache 2.0 Open-Weight</div>
+      </div>
+      <div class="hardware-item">
+        <div class="lbl">Embedding Model</div>
+        <div class="val">${escHtml(data.embedding_model || 'all-MiniLM-L6-v2')}</div>
+        <div class="hint" style="font-size:11px;">Local Offline Sentence-Transformers</div>
+      </div>
+      <div class="hardware-item">
+        <div class="lbl">Detected Hardware</div>
+        <div class="val">${escHtml(hw.cpu_model ? hw.cpu_model.split(' ')[0] : 'CPU')} &middot; ${hw.ram_total_gb || 16} GB RAM</div>
+        <div class="hint" style="font-size:11px;">${escHtml(hw.gpu_name || 'NVIDIA GPU')} (${hw.gpu_vram_gb || 4} GB VRAM)</div>
+      </div>
+      <div class="hardware-item">
+        <div class="lbl">Inference Throughput</div>
+        <div class="val">${telem.total_calls || 0} calls &middot; ${telem.avg_latency_ms || 0} ms avg</div>
+        <div class="hint" style="font-size:11px;">${telem.total_tokens || 0} tokens generated</div>
+      </div>
+    </div>
+
+    <div class="subhead" style="margin-top:var(--sp-3);">Recent Local Inference Operations</div>
+    ${logsHtml}
+  `;
+}

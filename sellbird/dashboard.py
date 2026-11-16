@@ -1211,8 +1211,11 @@ async def get_usage():
 
 
 @app.get("/api/prospects")
-async def get_prospects():
-    rows = await query_db("SELECT * FROM prospects ORDER BY created_at DESC LIMIT 200")
+async def get_prospects(product_id: str | None = None):
+    if product_id:
+        rows = await query_db("SELECT * FROM prospects WHERE product_id = ? ORDER BY created_at DESC LIMIT 200", (product_id,))
+    else:
+        rows = await query_db("SELECT * FROM prospects ORDER BY created_at DESC LIMIT 200")
     # Someone whose opt-out was undone keeps a way to see what happened.
     undone = {r["pid"] for r in await query_db(
         "SELECT DISTINCT json_extract(details_json, '$.prospect_id') AS pid FROM actions "

@@ -45,6 +45,12 @@
     <symbol id="i-pen" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="m13.5 6.5 4 4"/></symbol>
     <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></symbol>
     <symbol id="i-flag" viewBox="0 0 24 24"><path d="M5 21V4M5 4h11l-2 4 2 4H5"/></symbol>
+    <symbol id="i-analytics" viewBox="0 0 24 24"><path d="M18 20V10M12 20V4M6 20v-6"/></symbol>
+    <symbol id="i-briefcase" viewBox="0 0 24 24"><rect x="2" y="7" width="20" height="14" rx="2"/><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"/></symbol>
+    <symbol id="i-box" viewBox="0 0 24 24"><path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"/><path d="M3.27 6.96 12 12.01l8.73-5.05M12 22.08V12"/></symbol>
+    <symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></symbol>
+    <symbol id="i-cpu" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="2"/><rect x="9" y="9" width="6" height="6"/><path d="M9 1v3M15 1v3M9 20v3M15 20v3M20 9h3M20 14h3M1 9h3M1 14h3"/></symbol>
+
   </defs>
 </svg>
 
@@ -79,7 +85,7 @@
     <div class="nav-group">
       <div class="nav-label">Work</div>
       <button class="active" onclick="showTab('today', this)"><svg class="icon" aria-hidden="true"><use href="#i-today"/></svg><span class="label">Today</span><span class="nav-count" id="nav-today"></span></button>
-      <button onclick="showTab('company', this)"><svg class="icon" aria-hidden="true"><use href="#i-company"/></svg><span class="label">Your company</span><span class="nav-count" id="nav-company"></span></button>
+      <button onclick="showTab('company', this)"><svg class="icon" aria-hidden="true"><use href="#i-box"/></svg><span class="label">Products &amp; Businesses</span><span class="nav-count" id="nav-company"></span></button>
       <button onclick="showTab('outbox', this)"><svg class="icon" aria-hidden="true"><use href="#i-outbox"/></svg><span class="label">Outbox</span><span class="nav-count" id="nav-outbox"></span></button>
       <button onclick="showTab('inboxes', this)"><svg class="icon" aria-hidden="true"><use href="#i-inboxes"/></svg><span class="label">Inboxes</span></button>
       <button onclick="showTab('conversations', this)"><svg class="icon" aria-hidden="true"><use href="#i-conversations"/></svg><span class="label">Conversations</span><span class="nav-count" id="nav-conversations"></span></button>
@@ -91,6 +97,7 @@
       <button onclick="showTab('companies', this)"><svg class="icon" aria-hidden="true"><use href="#i-companies"/></svg><span class="label">Companies</span></button>
       <button onclick="showTab('prospects', this)"><svg class="icon" aria-hidden="true"><use href="#i-contacts"/></svg><span class="label">Contacts</span></button>
       <button onclick="showTab('campaigns', this)"><svg class="icon" aria-hidden="true"><use href="#i-campaigns"/></svg><span class="label">Campaigns</span></button>
+      <button onclick="showTab('analytics', this)"><svg class="icon" aria-hidden="true"><use href="#i-analytics"/></svg><span class="label">Analytics</span></button>
     </div>
     <div class="nav-group">
       <div class="nav-label">System</div>
@@ -165,11 +172,37 @@
 <div id="company" class="section">
   <div class="section-head">
     <div>
-      <h2>Your company</h2>
-      <p>Everything Sellbird writes from: what you sell, who you sell to, the offer every first email ends with, and who it's from. Edit any of it here, or talk it through with your coding agent.</p>
+      <h2>Products &amp; Businesses</h2>
+      <p>Manage multiple business profiles, products, value propositions, and Ideal Customer Profiles (ICPs).</p>
+    </div>
+    <div class="page-actions" id="pb-actions">
+      <button class="btn btn-secondary btn-sm" onclick="openBusinessModal()">+ New Business</button>
+      <button class="btn btn-primary btn-sm" onclick="openProductModal()">+ New Product</button>
+      <button class="btn btn-ghost btn-sm" onclick="openIcpModal()">+ New ICP</button>
     </div>
   </div>
-  <div id="company-body" class="company-body"><p class="desc">Loading...</p></div>
+    <div class="active-product-bar" id="active-product-banner">
+    <div class="title">
+      <svg class="icon" aria-hidden="true"><use href="#i-box"/></svg>
+      <span>Active Product:</span>
+      <select class="form-input" id="global-active-product" style="width:auto;min-width:240px;" onchange="changeActiveProduct(this.value)">
+        <option value="">Loading products...</option>
+      </select>
+    </div>
+    <div id="active-icp-display" class="hint" style="font-size:var(--fs-ui)"></div>
+  </div>
+
+  <div class="subtabs" role="tablist">
+    <button class="subtab-btn active" id="subtab-businesses" onclick="switchPBTab('businesses')">Businesses</button>
+    <button class="subtab-btn" id="subtab-products" onclick="switchPBTab('products')">Products</button>
+    <button class="subtab-btn" id="subtab-icps" onclick="switchPBTab('icps')">Target ICPs</button>
+    <button class="subtab-btn" id="subtab-legacy" onclick="switchPBTab('legacy')">Legacy Offer Config</button>
+  </div>
+
+  <div id="pb-tab-content">
+    <div id="pb-list-view"><p class="desc">Loading...</p></div>
+  </div>
+  <div id="company-body" class="company-body" style="display:none"></div>
 </div>
 
 <div id="signals" class="section">
@@ -274,6 +307,26 @@
   <div id="campaigns-list"></div>
 </div>
 
+<!-- Analytics -->
+<div id="analytics" class="section">
+  <div class="section-head">
+    <div>
+      <h2>Sales Analytics</h2>
+      <p>Multi-product sales pipeline metrics, prospect qualification rates, and signal distribution.</p>
+    </div>
+    <div class="page-actions">
+      <label class="form-label" style="display:inline-flex;align-items:center;gap:6px;margin:0">
+        Filter Product:
+        <select class="form-input" id="analytics-product-filter" style="width:auto;min-width:180px;" onchange="loadAnalytics(this.value)">
+          <option value="">All Products</option>
+        </select>
+      </label>
+    </div>
+  </div>
+  <div id="analytics-content">Loading analytics...</div>
+</div>
+
+
 <!-- Outbox: the decisions desk -->
 <div id="outbox" class="section">
   <div class="section-head">
@@ -317,7 +370,8 @@
 
 <!-- Usage -->
 <div id="usage" class="section">
-  <div class="section-head"><div><h2>Usage</h2><p>Model usage on your subscription (Claude or Codex): calls and tokens by provider, agent and task. Subscription plans aren't billed per token, so there are no dollar costs here.</p></div></div>
+  <div class="section-head"><div><h2>Usage &amp; Local AI Status</h2><p>Local Ollama inference telemetry, model status, detected hardware, and token throughput.</p></div></div>
+  <div class="card" id="local-ai-hardware-card" style="margin-bottom:var(--sp-4);">Loading Local AI &amp; Hardware Status...</div>
   <div id="usage-quota" class="card" style="display:none"></div>
   <div class="stats-grid" id="usage-stats"></div>
   <div class="card" id="usage-daily" style="display:none"></div>
@@ -601,5 +655,240 @@
 </div>
 
 <script src="/static/app.js"></script>
+
+<!-- Business Modal -->
+<dialog id="business-modal" class="modal" aria-labelledby="bm-title">
+  <div class="modal-head">
+    <div>
+      <h3 id="bm-title">Business Profile</h3>
+      <div class="sub">Organization profile and business positioning</div>
+    </div>
+    <button class="btn btn-ghost btn-sm btn-icon" onclick="closeBusinessModal()" aria-label="Close"><svg class="icon"><use href="#i-close"/></svg></button>
+  </div>
+  <div class="modal-body">
+    <input type="hidden" id="bm-id">
+    
+    <div style="background:var(--accent-soft);border:1px solid var(--accent-line);border-radius:var(--r-md);padding:var(--sp-3);margin-bottom:var(--sp-4);">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <div>
+          <b><svg class="icon" style="width:14px;height:14px;vertical-align:-2px"><use href="#i-sparkle"/></svg> Local AI Generation</b>
+          <div class="hint" style="font-size:var(--fs-caption);color:var(--text-2);">Generate business profile fields using local Ollama (qwen3:4b).</div>
+        </div>
+        <button class="btn btn-secondary btn-sm" id="btn-gen-biz" onclick="generateBusinessWithAI()">Generate with AI</button>
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label class="form-label" for="bm-name">Business Name *</label>
+      <input type="text" class="form-input" id="bm-name" placeholder="e.g. Acme Cloud Corp" required>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label" for="bm-domain">Domain / Website</label>
+        <input type="text" class="form-input" id="bm-domain" placeholder="acme.io">
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="bm-industry">Industry</label>
+        <input type="text" class="form-input" id="bm-industry" placeholder="B2B SaaS / DevOps">
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label" for="bm-desc">Description &amp; Overview</label>
+      <textarea class="form-input" id="bm-desc" rows="3" placeholder="What your business does..."></textarea>
+    </div>
+    <div id="bm-ai-badge" style="display:none;margin-top:var(--sp-2);">
+      <span class="badge-ai"><svg class="icon" style="width:12px;height:12px"><use href="#i-sparkle"/></svg> Generated by Local AI &mdash; Review &amp; Edit Before Saving</span>
+    </div>
+  </div>
+  <div class="modal-foot">
+    <button class="btn btn-ghost" onclick="closeBusinessModal()">Cancel</button>
+    <button class="btn btn-primary" id="bm-save-btn" onclick="saveBusinessProfile()">Save Business</button>
+  </div>
+</dialog>
+
+<!-- Product Modal -->
+<dialog id="product-modal" class="modal modal-lg" aria-labelledby="pm-title">
+  <div class="modal-head">
+    <div>
+      <h3 id="pm-title">Product Details</h3>
+      <div class="sub">Configure product positioning, value proposition, and objection handling</div>
+    </div>
+    <button class="btn btn-ghost btn-sm btn-icon" onclick="closeProductModal()" aria-label="Close"><svg class="icon"><use href="#i-close"/></svg></button>
+  </div>
+  <div class="modal-body">
+    <input type="hidden" id="pm-id">
+    <div class="form-row">
+      <div class="form-group" style="flex:1">
+        <label class="form-label" for="pm-business-id">Business Profile *</label>
+        <select class="form-input" id="pm-business-id" required></select>
+      </div>
+      <div class="form-group" style="flex:2">
+        <label class="form-label" for="pm-name">Product Name *</label>
+        <input type="text" class="form-input" id="pm-name" placeholder="e.g. CloudPulse Monitor" required>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group" style="flex:2">
+        <label class="form-label" for="pm-desc">Product Description</label>
+        <input type="text" class="form-input" id="pm-desc" placeholder="High-throughput latency tracing for microservices">
+      </div>
+      <div class="form-group" style="flex:1">
+        <label class="form-label" for="pm-pricing">Pricing Model</label>
+        <input type="text" class="form-input" id="pm-pricing" placeholder="$499/mo per cluster">
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label" for="pm-offer">Primary Offer (Call to Action Hook)</label>
+      <input type="text" class="form-input" id="pm-offer" placeholder="e.g. Free 14-day telemetry audit of your primary API">
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label" for="pm-features">Features (one per line)</label>
+        <textarea class="form-input" id="pm-features" rows="3" placeholder="Distributed eBPF tracing&#10;Real-time anomaly alerts"></textarea>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="pm-benefits">Benefits (one per line)</label>
+        <textarea class="form-input" id="pm-benefits" rows="3" placeholder="Cut MTTR by 65%&#10;Zero overhead instrumentation"></textarea>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label" for="pm-usps">Unique Selling Points (USPs)</label>
+        <textarea class="form-input" id="pm-usps" rows="2" placeholder="Local-first data retention&#10;Sub-millisecond query latency"></textarea>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="pm-objections">Objection Responses (key: response)</label>
+        <textarea class="form-input" id="pm-objections" rows="2" placeholder="price: ROI achieved within 30 days&#10;security: SOC2 certified, all telemetry stays on-prem"></textarea>
+      </div>
+    </div>
+  </div>
+  <div class="modal-foot">
+    <button class="btn btn-ghost" onclick="closeProductModal()">Cancel</button>
+    <button class="btn btn-primary" id="pm-save-btn" onclick="saveProduct()">Save Product</button>
+  </div>
+</dialog>
+
+<!-- ICP Modal -->
+<dialog id="icp-modal" class="modal modal-lg" aria-labelledby="im-title">
+  <div class="modal-head">
+    <div>
+      <h3 id="im-title">Ideal Customer Profile (ICP)</h3>
+      <div class="sub">Define target accounts, personas, pain points, and buying signals</div>
+    </div>
+    <button class="btn btn-ghost btn-sm btn-icon" onclick="closeIcpModal()" aria-label="Close"><svg class="icon"><use href="#i-close"/></svg></button>
+  </div>
+  <div class="modal-body">
+    <input type="hidden" id="im-id">
+    <div class="form-row">
+      <div class="form-group" style="flex:1">
+        <label class="form-label" for="im-product-id">Associated Product *</label>
+        <select class="form-input" id="im-product-id" required></select>
+      </div>
+      <div class="form-group" style="flex:2">
+        <label class="form-label" for="im-name">ICP Name *</label>
+        <input type="text" class="form-input" id="im-name" placeholder="e.g. Enterprise DevOps &amp; SRE Leads" required>
+      </div>
+    </div>
+
+    <div style="background:var(--accent-soft);border:1px solid var(--accent-line);border-radius:var(--r-md);padding:var(--sp-3);margin-bottom:var(--sp-4);">
+      <div style="display:flex;justify-content:space-between;align-items:center;">
+        <div>
+          <b><svg class="icon" style="width:14px;height:14px;vertical-align:-2px"><use href="#i-sparkle"/></svg> Local AI ICP Generator</b>
+          <div class="hint" style="font-size:var(--fs-caption);color:var(--text-2);">Synthesize target personas, pain points, and signals from the selected product.</div>
+        </div>
+        <button class="btn btn-secondary btn-sm" id="btn-gen-icp" onclick="generateIcpWithAI()">Generate with AI</button>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label" for="im-industries">Target Industries (comma-separated)</label>
+        <input type="text" class="form-input" id="im-industries" placeholder="DevOps, SaaS, FinTech, E-Commerce">
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="im-sizes">Company Sizes (comma-separated)</label>
+        <input type="text" class="form-input" id="im-sizes" placeholder="50-200, 201-1000">
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label" for="im-geos">Geographies (comma-separated)</label>
+        <input type="text" class="form-input" id="im-geos" placeholder="United States, Canada, Europe">
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="im-titles">Target Job Titles (comma-separated)</label>
+        <input type="text" class="form-input" id="im-titles" placeholder="CTO, VP of Engineering, Lead DevOps, Head of Infrastructure">
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label" for="im-personas">Buyer Personas</label>
+      <textarea class="form-input" id="im-personas" rows="2" placeholder="Engineering leaders responsible for uptime, SLA compliance, and infrastructure costs"></textarea>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label" for="im-pains">Key Pain Points (one per line)</label>
+        <textarea class="form-input" id="im-pains" rows="2" placeholder="Slow incident diagnosis&#10;High cloud monitoring bills"></textarea>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="im-signals">Buying Signals (one per line)</label>
+        <textarea class="form-input" id="im-signals" rows="2" placeholder="Hiring Kubernetes engineers&#10;Recent outage announcement"></textarea>
+      </div>
+    </div>
+    <div id="im-ai-badge" style="display:none;margin-top:var(--sp-2);">
+      <span class="badge-ai"><svg class="icon" style="width:12px;height:12px"><use href="#i-sparkle"/></svg> Generated by Local AI &mdash; Review &amp; Edit Before Saving</span>
+    </div>
+  </div>
+  <div class="modal-foot">
+    <button class="btn btn-ghost" onclick="closeIcpModal()">Cancel</button>
+    <button class="btn btn-primary" id="im-save-btn" onclick="saveIcp()">Save ICP</button>
+  </div>
+</dialog>
+
+<!-- Prospect Intelligence Drawer / Modal -->
+<dialog id="intel-modal" class="modal modal-lg" aria-labelledby="intel-modal-title">
+  <div class="modal-head">
+    <div>
+      <h3 id="intel-modal-title">Prospect Sales Intelligence</h3>
+      <div class="sub" id="intel-modal-sub">Evidence, scoring breakdown, and AI problem hook</div>
+    </div>
+    <button class="btn btn-ghost btn-sm btn-icon" onclick="closeIntelModal()" aria-label="Close"><svg class="icon"><use href="#i-close"/></svg></button>
+  </div>
+  <div class="modal-body" id="intel-modal-body">
+    <div style="padding:var(--sp-6);text-align:center;">Loading intelligence...</div>
+  </div>
+  <div class="modal-foot" id="intel-modal-foot">
+    <button class="btn btn-ghost" onclick="closeIntelModal()">Close</button>
+  </div>
+</dialog>
+
+<!-- Email Draft & Review Modal -->
+<dialog id="email-modal" class="modal modal-lg" aria-labelledby="email-modal-title">
+  <div class="modal-head">
+    <div>
+      <h3 id="email-modal-title">Review &amp; Edit Outreach Draft</h3>
+      <div class="sub" id="email-modal-sub">Grounded in verified prospect evidence and product offer</div>
+    </div>
+    <button class="btn btn-ghost btn-sm btn-icon" onclick="closeEmailModal()" aria-label="Close"><svg class="icon"><use href="#i-close"/></svg></button>
+  </div>
+  <div class="modal-body">
+    <input type="hidden" id="email-modal-prospect-id">
+    <div class="notice wait" style="margin-bottom:var(--sp-3)">
+      <b>Human Review Required:</b> Staging this email sends it to the <b>Outbox</b> in <code>pending_review</code> status. Harvey will never send without your final approval.
+    </div>
+    <div class="form-group">
+      <label class="form-label" for="email-modal-subj">Subject Line</label>
+      <input type="text" class="form-input" id="email-modal-subj" placeholder="Subject...">
+    </div>
+    <div class="form-group">
+      <label class="form-label" for="email-modal-body-input">Email Body</label>
+      <textarea class="form-input" id="email-modal-body-input" rows="8" style="font-family:var(--sans);line-height:1.6"></textarea>
+    </div>
+  </div>
+  <div class="modal-foot">
+    <button class="btn btn-ghost" onclick="closeEmailModal()">Cancel</button>
+    <button class="btn btn-primary" id="email-modal-stage-btn" onclick="submitStageEmail()">Stage to Outbox (Approve Later)</button>
+  </div>
+</dialog>
+
 </body>
 </html>
