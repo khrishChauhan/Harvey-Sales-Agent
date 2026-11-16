@@ -38,6 +38,7 @@ class BusinessCreateRequest(BaseModel):
     name: str
     description: str = ""
     website: str = ""
+    domain: str = ""
     industry: str = ""
     company_size: str = ""
     business_location: str = ""
@@ -49,6 +50,7 @@ class BusinessUpdateRequest(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     website: Optional[str] = None
+    domain: Optional[str] = None
     industry: Optional[str] = None
     company_size: Optional[str] = None
     business_location: Optional[str] = None
@@ -130,10 +132,19 @@ async def create_business(req: BusinessCreateRequest):
     """Create a new business profile."""
     state = _state()
     await state.init_db()
-    biz = BusinessProfile(**req.model_dump())
+    data = req.model_dump()
+    if data.get("domain") and not data.get("website"):
+        data["website"] = data["domain"]
+    data.pop("domain", None)
+    biz = BusinessProfile(**data)
     biz_id = await state.add_business(biz)
     saved = await state.get_business(biz_id)
-    return saved.model_dump() if saved else {"id": biz_id}
+    if saved:
+        d = saved.model_dump()
+        d["domain"] = saved.website
+        d["success"] = True
+        return d
+    return {"success": True, "id": biz_id, "domain": req.domain or req.website}
 
 
 @router.get("/api/businesses")
@@ -142,7 +153,12 @@ async def list_businesses():
     state = _state()
     await state.init_db()
     businesses = await state.list_businesses()
-    return [b.model_dump() for b in businesses]
+    res = []
+    for b in businesses:
+        d = b.model_dump()
+        d["domain"] = b.website
+        res.append(d)
+    return res
 
 
 @router.get("/api/businesses/{business_id}")
@@ -162,13 +178,21 @@ async def update_business(business_id: str, req: BusinessUpdateRequest):
     state = _state()
     await state.init_db()
     updates = {k: v for k, v in req.model_dump().items() if v is not None}
+    if updates.get("domain") and not updates.get("website"):
+        updates["website"] = updates["domain"]
+    updates.pop("domain", None)
     if not updates:
         raise HTTPException(status_code=400, detail="No fields provided for update")
     ok = await state.update_business(business_id, **updates)
     if not ok:
         raise HTTPException(status_code=404, detail=f"Business '{business_id}' not found")
     saved = await state.get_business(business_id)
-    return saved.model_dump()
+    if not saved:
+        raise HTTPException(status_code=404, detail=f"Business '{business_id}' not found")
+    d = saved.model_dump()
+    d["domain"] = saved.website
+    d["success"] = True
+    return d
 
 
 @router.delete("/api/businesses/{business_id}")
@@ -182,7 +206,7 @@ async def delete_business(business_id: str, force: bool = Query(False)):
         raise HTTPException(status_code=400, detail=str(e))
     if not ok:
         raise HTTPException(status_code=404, detail=f"Business '{business_id}' not found")
-    return {"status": "deleted", "id": business_id}
+    return {"success": True, "status": "deleted", "id": business_id}
 
 
 # ── Product Endpoints ──
@@ -198,7 +222,9 @@ async def create_product(req: ProductCreateRequest):
     prod = Product(**req.model_dump())
     prod_id = await state.add_product(prod)
     saved = await state.get_product(prod_id)
-    return saved.model_dump() if saved else {"id": prod_id}
+    res = saved.model_dump() if saved else {"id": prod_id}
+    res["success"] = True
+    return res
 
 @router.post("/api/businesses/{business_id}/products")
 async def create_business_product(business_id: str, payload: dict = Body(...)):
@@ -210,10 +236,20 @@ async def create_business_product(business_id: str, payload: dict = Body(...)):
         raise HTTPException(status_code=400, detail=f"Referenced business '{business_id}' does not exist")
     data = dict(payload)
     data["business_id"] = business_id
+    if "features" in data and "key_features" not in data:
+        data["key_features"] = data.pop("features")
+    if "benefits" in data and "key_benefits" not in data:
+        data["key_benefits"] = data.pop("benefits")
+    if "usps" in data and "unique_selling_points" not in data:
+        data["unique_selling_points"] = data.pop("usps")
+    if "offer_entry" in data and not data.get("offer"):
+        data["offer"] = {"entry": data.pop("offer_entry")}
     prod = Product(**data)
     prod_id = await state.add_product(prod)
     saved = await state.get_product(prod_id)
-    return saved.model_dump() if saved else {"id": prod_id}
+    res = saved.model_dump() if saved else {"id": prod_id}
+    res["success"] = True
+    return res
 
 
 
@@ -263,7 +299,7 @@ async def delete_product(product_id: str, force: bool = Query(False)):
         raise HTTPException(status_code=400, detail=str(e))
     if not ok:
         raise HTTPException(status_code=404, detail=f"Product '{product_id}' not found")
-    return {"status": "deleted", "id": product_id}
+    return {"success": True, "status": "deleted", "id": product_id}
 
 
 @router.get("/api/products/{product_id}/prospects")
@@ -297,7 +333,9 @@ async def create_icp(req: ICPCreateRequest):
     icp = ICP(**req.model_dump())
     icp_id = await state.add_icp(icp)
     saved = await state.get_icp(icp_id)
-    return saved.model_dump() if saved else {"id": icp_id}
+    res = saved.model_dump() if saved else {"id": icp_id}
+    res["success"] = True
+    return res
 
 @router.get("/api/products/{product_id}/icps")
 async def get_product_icps(product_id: str):
@@ -333,7 +371,9 @@ async def create_product_icp(product_id: str, payload: dict = Body(...)):
     icp = ICP(**data)
     icp_id = await state.add_icp(icp)
     saved = await state.get_icp(icp_id)
-    return saved.model_dump() if saved else {"id": icp_id}
+    res = saved.model_dump() if saved else {"id": icp_id}
+    res["success"] = True
+    return res
 
 
 
@@ -380,7 +420,7 @@ async def delete_icp(icp_id: str):
     ok = await state.delete_icp(icp_id)
     if not ok:
         raise HTTPException(status_code=404, detail=f"ICP '{icp_id}' not found")
-    return {"status": "deleted", "id": icp_id}
+    return {"success": True, "status": "deleted", "id": icp_id}
 
 
 # ── Local AI Generation Endpoints ──
@@ -495,7 +535,7 @@ async def set_active_product(req: SetActiveProductRequest):
     if not prod:
         raise HTTPException(status_code=404, detail=f"Product '{req.product_id}' not found")
     await state.set_setting("active_product_id", req.product_id)
-    return {"active_product_id": req.product_id, "product": prod.model_dump()}
+    return {"success": True, "active_product_id": req.product_id, "product_name": prod.name, "product": prod.model_dump()}
 
 
 @router.get("/api/active-icp")
@@ -535,7 +575,7 @@ async def set_active_icp(req: SetActiveICPRequest):
     if pid:
         await state.set_setting(f"active_icp_{pid}", req.icp_id)
     await state.set_setting("active_icp_id", req.icp_id)
-    return {"active_icp_id": req.icp_id, "icp": icp.model_dump()}
+    return {"success": True, "active_icp_id": req.icp_id, "icp": icp.model_dump()}
 
 
 @router.get("/api/prospects/{prospect_id}/intelligence")

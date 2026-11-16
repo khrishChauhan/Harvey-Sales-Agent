@@ -2221,6 +2221,21 @@ async function loadProspects() {
     // A rebuild after an offline blip must show the search still applied.
     document.getElementById('contact-search').value = _contactQuery;
   }
+  const prospectProdSel = document.getElementById('prospect-product-filter');
+  if (prospectProdSel) {
+    if (!_products || !_products.length) {
+      api('/api/products').then(prods => {
+        if (prods && prods.length) {
+          _products = prods;
+          prospectProdSel.innerHTML = '<option value="">All Products</option>' + 
+            _products.map(p => `<option value="${escHtml(p.id)}"${p.id === _prospectProductFilter ? ' selected' : ''}>${escHtml(p.name)}</option>`).join('');
+        }
+      });
+    } else {
+      prospectProdSel.innerHTML = '<option value="">All Products</option>' + 
+        _products.map(p => `<option value="${escHtml(p.id)}"${p.id === _prospectProductFilter ? ' selected' : ''}>${escHtml(p.name)}</option>`).join('');
+    }
+  }
   renderContacts();
 }
 
@@ -3597,7 +3612,7 @@ async function changeActiveProduct(productId) {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({product_id: productId}),
   });
-  if (res && res.success) {
+  if (res && (res.success || res.active_product_id)) {
     _activeProductId = productId;
     showToast('Active product set to ' + (res.product_name || productId), 'success');
     loadProductsAndBusinesses();
@@ -3613,7 +3628,7 @@ async function changeActiveIcp(icpId) {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({icp_id: icpId}),
   });
-  if (res && res.success) {
+  if (res && (res.success || res.active_icp_id)) {
     _activeIcpId = icpId;
     showToast('Active ICP updated.', 'success');
     loadProductsAndBusinesses();
@@ -3715,7 +3730,7 @@ async function saveBusinessProfile() {
     body: JSON.stringify(payload),
   });
 
-  if (res && res.success) {
+  if (res && (res.success || res.id)) {
     showToast(id ? 'Business profile updated.' : 'Business profile created.', 'success');
     closeBusinessModal();
     loadProductsAndBusinesses();
@@ -3727,7 +3742,7 @@ async function saveBusinessProfile() {
 async function deleteBusiness(bizId) {
   if (!confirm('Are you sure you want to delete this business profile? Associated products and ICPs may also be affected.')) return;
   const res = await api('/api/businesses/' + encodeURIComponent(bizId), {method: 'DELETE'});
-  if (res && res.success) {
+  if (res && (res.success || res.status === 'deleted')) {
     showToast('Business profile deleted.', 'success');
     loadProductsAndBusinesses();
   } else {
@@ -3830,7 +3845,7 @@ async function saveProduct() {
     body: JSON.stringify(payload),
   });
 
-  if (res && res.success) {
+  if (res && (res.success || res.id)) {
     showToast(id ? 'Product updated.' : 'Product created.', 'success');
     closeProductModal();
     loadProductsAndBusinesses();
@@ -3842,7 +3857,7 @@ async function saveProduct() {
 async function deleteProduct(productId) {
   if (!confirm('Are you sure you want to delete this product?')) return;
   const res = await api('/api/products/' + encodeURIComponent(productId), {method: 'DELETE'});
-  if (res && res.success) {
+  if (res && (res.success || res.status === 'deleted')) {
     showToast('Product deleted.', 'success');
     loadProductsAndBusinesses();
   } else {
@@ -3992,7 +4007,7 @@ async function saveIcp() {
     body: JSON.stringify(payload),
   });
 
-  if (res && res.success) {
+  if (res && (res.success || res.id)) {
     showToast(id ? 'ICP updated.' : 'ICP created.', 'success');
     closeIcpModal();
     loadProductsAndBusinesses();
@@ -4004,7 +4019,7 @@ async function saveIcp() {
 async function deleteIcp(icpId) {
   if (!confirm('Are you sure you want to delete this ICP?')) return;
   const res = await api('/api/icps/' + encodeURIComponent(icpId), {method: 'DELETE'});
-  if (res && res.success) {
+  if (res && (res.success || res.status === 'deleted')) {
     showToast('ICP deleted.', 'success');
     loadProductsAndBusinesses();
   } else {

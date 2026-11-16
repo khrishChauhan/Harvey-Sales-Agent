@@ -17,6 +17,7 @@ class BusinessProfile(BaseModel):
     name: str
     description: str = ""
     website: str = ""
+    domain: str = ""
     industry: str = ""
     company_size: str = ""
     business_location: str = ""
@@ -39,4 +40,6 @@ class BusinessProfile(BaseModel):
                 d["target_markets"] = [raw_markets] if raw_markets else []
         elif not isinstance(raw_markets, list):
             d["target_markets"] = []
+        if d.get("website") and not d.get("domain"):
+            d["domain"] = d["website"]
         return cls(**d)
