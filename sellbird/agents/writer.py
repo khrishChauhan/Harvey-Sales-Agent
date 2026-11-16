@@ -601,6 +601,19 @@ class Writer:
         rules = getattr(self, "email_rules", "")
         prompt += offer_block(self.config, product_context=product_context)
         prompt += operator_rules_block(rules)
+
+        from sellbird.problem_statement import generate_problem_statement
+        try:
+            problem = await generate_problem_statement(
+                self.brain,
+                product_context,
+                prospect,
+                research_facts=facts,
+            )
+            if problem and problem.business_challenge:
+                prompt += f"\n\nEVIDENCE-BASED PROBLEM STATEMENT:\n{problem.writer_note()}\n"
+        except Exception as e:
+            logger.debug(f"Problem statement generation skipped: {e}")
         if rules:
             shape = (
                 "- Follow the OPERATOR'S EMAIL RULES above for this first email: its length,\n"
@@ -702,7 +715,7 @@ Pricing: {product_context.pricing}"""
         # note about one person ("met her at the expo") must never reach it.
         prompt += await self._feedback_block([])
         rules = getattr(self, "email_rules", "")
-        prompt += offer_block(self.config)
+        prompt += offer_block(self.config, product_context=product_context)
         prompt += operator_rules_block(rules)
         if rules:
             shape = (

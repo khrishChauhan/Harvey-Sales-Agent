@@ -644,6 +644,40 @@ MIGRATIONS: list[str] = [
     CREATE INDEX IF NOT EXISTS idx_observations_product ON observations(product_id);
     CREATE INDEX IF NOT EXISTS idx_outbox_product ON outbox(product_id);
     """,
+    # ── v19: local semantic embeddings and research dossiers ──
+    """
+    CREATE TABLE IF NOT EXISTS embeddings (
+        id TEXT PRIMARY KEY,
+        entity_type TEXT NOT NULL,
+        entity_id TEXT NOT NULL,
+        product_id TEXT DEFAULT '',
+        embedding TEXT NOT NULL,
+        model_name TEXT NOT NULL,
+        dimension INTEGER NOT NULL,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_embeddings_entity ON embeddings(entity_type, entity_id);
+    CREATE INDEX IF NOT EXISTS idx_embeddings_product ON embeddings(product_id);
+
+    CREATE TABLE IF NOT EXISTS research_dossiers (
+        id TEXT PRIMARY KEY,
+        company_id TEXT NOT NULL,
+        product_id TEXT DEFAULT '',
+        domain TEXT NOT NULL DEFAULT '',
+        verified_facts TEXT NOT NULL DEFAULT '[]',
+        ai_interpretations TEXT NOT NULL DEFAULT '[]',
+        hiring_roles TEXT NOT NULL DEFAULT '[]',
+        tech_stack TEXT NOT NULL DEFAULT '[]',
+        source_urls TEXT NOT NULL DEFAULT '[]',
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_research_company ON research_dossiers(company_id);
+    CREATE INDEX IF NOT EXISTS idx_research_product ON research_dossiers(product_id);
+    """,
 ]
 
 BRAIN_PROVIDERS = ("ollama", "claude", "codex")
@@ -1223,6 +1257,10 @@ class StateManager:
             db.row_factory = aiosqlite.Row
             async with db.execute(sql, params) as cursor:
                 return [dict(r) for r in await cursor.fetchall()]
+
+    async def get_observations_for_company(self, company_id: str) -> list[dict]:
+        """Convenience query for observations belonging to a company."""
+        return await self.get_observations(company_id=company_id)
 
     async def get_texts_for_prospect(self, prospect_id: str, limit: int = 50) -> list[str]:
         """Everything Sellbird wrote for this person, which a reply may quote
@@ -3348,3 +3386,147 @@ class StateManager:
             await db.commit()
 
         return business_id, product_id, icp_id
+
+    # ── Embeddings & Semantic Search ──
+
+    async def save_embedding(
+        self,
+        entity_type: str,
+        entity_id: str,
+        embedding: list[float],
+        product_id: str = "",
+        model_name: str = "all-MiniLM-L6-v2",
+    ) -> str:
+        """Save or update embedding vector for an entity (prospect, company, product, icp, observation)."""
+        emb_id = _new_id()
+        emb_json = json.dumps(embedding)
+        dim = len(embedding)
+        now = datetime.now(timezone.utc).isoformat()
+
+        async with self._connect() as db:
+            await db.execute(
+                """INSERT INTO embeddings
+                   (id, entity_type, entity_id, product_id, embedding, model_name, dimension, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                   embedding = excluded.embedding,
+                   updated_at = excluded.updated_at""",
+                (emb_id, entity_type, entity_id, product_id, emb_json, model_name, dim, now, now),
+            )
+            await db.commit()
+            return emb_id
+
+    async def get_embedding(self, entity_type: str, entity_id: str) -> list[float] | None:
+        """Retrieve stored embedding vector for an entity."""
+        async with self._connect() as db:
+            async with db.execute(
+                """SELECT embedding FROM embeddings
+                   WHERE entity_type = ? AND entity_id = ?
+                   ORDER BY updated_at DESC LIMIT 1""",
+                (entity_type, entity_id),
+            ) as cursor:
+                row = await cursor.fetchone()
+                if row:
+                    try:
+                        return json.loads(row[0])
+                    except Exception:
+                        return None
+                return None
+
+    async def find_similar_entities(
+        self,
+        entity_type: str,
+        query_vector: list[float],
+        product_id: str | None = None,
+        top_k: int = 5,
+    ) -> list[tuple[str, float]]:
+        """Find stored entities with highest cosine similarity to query vector."""
+        from sellbird.embeddings import cosine_similarity
+
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            query = "SELECT entity_id, embedding FROM embeddings WHERE entity_type = ?"
+            params = [entity_type]
+            if product_id is not None:
+                query += " AND (product_id = ? OR product_id = '')"
+                params.append(product_id)
+
+            async with db.execute(query, params) as cursor:
+                rows = await cursor.fetchall()
+
+            scored = []
+            for r in rows:
+                try:
+                    vec = json.loads(r["embedding"])
+                    sim = cosine_similarity(query_vector, vec)
+                    scored.append((r["entity_id"], sim))
+                except Exception:
+                    continue
+
+            scored.sort(key=lambda x: x[1], reverse=True)
+            return scored[:top_k]
+
+    # ── Research Dossiers ──
+
+    async def save_research_dossier(
+        self,
+        company_id: str,
+        domain: str,
+        product_id: str = "",
+        verified_facts: list[dict] | None = None,
+        ai_interpretations: list[dict] | None = None,
+        hiring_roles: list[str] | None = None,
+        tech_stack: list[str] | None = None,
+        source_urls: list[str] | None = None,
+    ) -> str:
+        """Store research dossier with verified facts and AI interpretations."""
+        dossier_id = _new_id()
+        now = datetime.now(timezone.utc).isoformat()
+        async with self._connect() as db:
+            await db.execute(
+                """INSERT INTO research_dossiers
+                   (id, company_id, product_id, domain, verified_facts, ai_interpretations,
+                    hiring_roles, tech_stack, source_urls, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(id) DO UPDATE SET
+                   verified_facts = excluded.verified_facts,
+                   ai_interpretations = excluded.ai_interpretations,
+                   hiring_roles = excluded.hiring_roles,
+                   tech_stack = excluded.tech_stack,
+                   source_urls = excluded.source_urls,
+                   updated_at = excluded.updated_at""",
+                (
+                    dossier_id, company_id, product_id or "", domain or "",
+                    json.dumps(verified_facts or []),
+                    json.dumps(ai_interpretations or []),
+                    json.dumps(hiring_roles or []),
+                    json.dumps(tech_stack or []),
+                    json.dumps(source_urls or []),
+                    now, now,
+                ),
+            )
+            await db.commit()
+            return dossier_id
+
+    async def get_research_dossier(self, company_id: str, product_id: str = "") -> dict | None:
+        """Retrieve latest research dossier for a company."""
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            query = "SELECT * FROM research_dossiers WHERE company_id = ?"
+            params = [company_id]
+            if product_id:
+                query += " AND (product_id = ? OR product_id = '')"
+                params.append(product_id)
+            query += " ORDER BY updated_at DESC LIMIT 1"
+
+            async with db.execute(query, params) as cursor:
+                row = await cursor.fetchone()
+                if not row:
+                    return None
+                d = dict(row)
+                for key in ("verified_facts", "ai_interpretations", "hiring_roles", "tech_stack", "source_urls"):
+                    try:
+                        d[key] = json.loads(d.get(key) or "[]")
+                    except Exception:
+                        d[key] = []
+                return d

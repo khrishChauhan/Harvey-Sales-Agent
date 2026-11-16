@@ -43,19 +43,27 @@ MIN_SENDS_FOR_KILL_SWITCH = 10
 
 INTENT_LABELS = {
     "accepted_offer",
+    "meeting_requested",
+    "more_info_requested",
     "interested",
     "objection",
+    "follow_up_later",
     "not_interested",
     "ooo",
+    "out_of_office",
     "wrong_person",
     "question",
     "unsubscribe",
     "escalate",
+    "unclear",
 }
 
 # Intents that get an automated reply. Everything else is closed,
 # deferred, or escalated to a human.
-AUTO_REPLY_INTENTS = {"accepted_offer", "interested", "objection", "question", "wrong_person"}
+AUTO_REPLY_INTENTS = {
+    "accepted_offer", "meeting_requested", "more_info_requested",
+    "interested", "objection", "question", "wrong_person",
+}
 # Set once a prospect's accepted offer was handed off (sellbird.handoff), so a
 # retry of the same reply never hands them off twice.
 HANDOFF_KEY = "handoff:"
@@ -889,7 +897,10 @@ class Handler:
         elif escalate:
             intent = "escalate"
         else:
-            intent = await self._classify_intent(reply_text, prospect)
+            from sellbird.product_context import resolve_product_context
+            p_id = getattr(prospect, "product_id", "") or None
+            prod_ctx = await resolve_product_context(self.state, p_id, config=self.config)
+            intent = await self._classify_intent(reply_text, prospect, product_context=prod_ctx)
         logger.info(f"Handler: Intent for {lead_email}: {intent}")
         if intent not in NO_COMPANY_STOP_INTENTS:
             await self._stop_colleagues(prospect)
@@ -1324,26 +1335,54 @@ class Handler:
         return list(gate.reasons) + autopilot_review("", response, self.config,
                                                      recipient=prospect.email)
 
-    async def _classify_intent(self, reply_text: str, prospect) -> str:
-        """Ask the brain to classify the reply's intent."""
-        offer = str(getattr(getattr(getattr(self.config, "product", None), "offer", None), "entry", "") or "").strip()
-        accepted = (f'- "accepted_offer" — says yes to the offer in our email ("{offer}"): "sure, send it",\n'
-                    '  "yes please", "go ahead". A yes to the offer itself, not general interest.\n') if offer else ""
-        prompt = f"""Classify this email reply into exactly ONE category:
-{accepted}- "interested" — wants to learn more, open to a meeting, positive response
-- "objection" — has concerns but hasn't said no (price, timing, competition)
-- "not_interested" — a clear no, not now, or "we're all set"
-- "unsubscribe" — asks to stop being contacted, remove from list, opt out
+    async def _classify_intent(
+        self,
+        reply_text: str,
+        prospect,
+        product_context=None,
+        convo=None,
+    ) -> str:
+        """Ask the brain to classify the reply's intent using local model and product context."""
+        offer = ""
+        product_info = ""
+        if product_context:
+            po = getattr(product_context, "offer", None)
+            if isinstance(po, dict):
+                offer = str(po.get("entry") or po.get("type") or po.get("cta") or "").strip()
+            elif isinstance(po, str):
+                offer = po.strip()
+            product_info = f"Product Context: {product_context.product_name} — {product_context.product_description}"
+        if not offer:
+            offer = str(getattr(getattr(getattr(self.config, "product", None), "offer", None), "entry", "") or "").strip()
+
+        history_context = ""
+        if convo and getattr(convo, "thread", None):
+            history_context = f"\nConversation history:\n{conversation_history(convo.thread, prospect.full_name())}\n"
+
+        accepted = (f'- "accepted_offer" — explicitly says yes to the offer in our email ("{offer}"): "sure, send it",\n'
+                    '  "yes please", "go ahead". A direct yes to the offer.\n') if offer else ""
+        prompt = f"""You are classifying an incoming prospect reply for a sales conversation.
+{product_info}
+
+Classify this email reply into exactly ONE category:
+{accepted}- "meeting_requested" — asks for a call, meeting, calendar link, or demo
+- "more_info_requested" — asks for details, case study, deck, or technical documentation
+- "interested" — general positive response or curiosity
+- "objection" — has concerns (pricing, timing, competitors, internal priority) but hasn't opted out
+- "follow_up_later" — busy now, asked to contact in next quarter or at a future date
+- "not_interested" — a clear polite or direct no, "we are all set"
+- "unsubscribe" — asks to stop contacting, remove from list, opt out
 - "escalate" — angry, hostile, threatens legal action, or mentions spam/compliance
-- "ooo" — out of office / auto-reply
+- "out_of_office" — out of office / auto-reply
 - "wrong_person" — not the right contact, suggests someone else
-- "question" — asking for more information before deciding
+- "question" — asking a specific question before deciding
+- "unclear" — ambiguous, incomplete, or confusing message
 
 When in doubt between "not_interested" and "unsubscribe", choose "unsubscribe".
 When in doubt between anything and "escalate", choose "escalate".
 
 {UNTRUSTED_RULE}
-
+{history_context}
 {fence(f"Reply from {prospect.full_name()} ({prospect.title} at {prospect.company}):" + chr(10) + reply_text, "their reply")}
 
 Respond with ONLY the category label, nothing else."""
