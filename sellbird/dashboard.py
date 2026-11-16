@@ -1056,11 +1056,12 @@ async def get_stats():
         # get_usage_today use date.today()); SQLite's date('now') is UTC and
         # can select a different day's counts on either side of UTC midnight.
         usage = await query_db(
-            "SELECT claude_calls, codex_calls FROM usage_log WHERE date = ?",
+            "SELECT ollama_calls, claude_calls, codex_calls FROM usage_log WHERE date = ?",
             (date.today().isoformat(),),
         )
-        usage_today = (usage[0]["claude_calls"] or 0) if usage else 0
-        codex_today = (usage[0]["codex_calls"] or 0) if usage else 0
+        ollama_today = (usage[0]["ollama_calls"] or 0) if (usage and "ollama_calls" in usage[0].keys()) else 0
+        usage_today = (usage[0]["claude_calls"] or 0) if (usage and "claude_calls" in usage[0].keys()) else 0
+        codex_today = (usage[0]["codex_calls"] or 0) if (usage and "codex_calls" in usage[0].keys()) else 0
 
         return {
             "prospects": {"total": prospect_total, "by_status": prospect_map},
@@ -1068,6 +1069,7 @@ async def get_stats():
             "conversations": {"total": sum(convo_map.values()), "by_status": convo_map},
             "pipeline": pipeline,
             "actions_total": action_count,
+            "ollama_calls_today": ollama_today,
             "claude_calls_today": usage_today,
             "codex_calls_today": codex_today,
             "brain_provider": _active_provider(),
@@ -1163,12 +1165,32 @@ async def get_usage():
     brain = _active_brain()
     provider = brain.provider if brain else ""
     quota = None
-    try:
-        client = _quota_client_for(provider, brain.model if brain else "")
-        if client is not None:
-            quota = await client.get_utilization()
-    except Exception as e:
-        logger.debug("Quota lookup failed: %s", e)
+    hardware_profile = None
+    local_inference_logs = []
+
+    if provider == "ollama":
+        try:
+            from sellbird.hardware import detect_hardware
+            from sellbird.state import StateManager
+            hardware_profile = detect_hardware().to_dict()
+            sm = StateManager()
+            await sm.init_db()
+            local_inference_logs = await sm.get_local_inference_logs(limit=25)
+            quota = {
+                "local": True,
+                "engine": "Ollama",
+                "model": brain.model if brain else "qwen3:4b",
+                "endpoint": getattr(brain, "endpoint", "http://127.0.0.1:11434"),
+            }
+        except Exception as e:
+            logger.debug("Local Ollama usage inspection failed: %s", e)
+    else:
+        try:
+            client = _quota_client_for(provider, brain.model if brain else "")
+            if client is not None:
+                quota = await client.get_utilization()
+        except Exception as e:
+            logger.debug("Quota lookup failed: %s", e)
 
     return {
         "provider": provider,
@@ -1177,6 +1199,8 @@ async def get_usage():
         # "unavailable" for the active provider instead of hiding the gauge.
         "quota_provider": provider,
         "quota_status": ("available" if quota else "unavailable") if provider else "",
+        "hardware_profile": hardware_profile,
+        "local_inference_logs": local_inference_logs,
         "by_provider": by_provider,
         "totals": totals,
         "by_day": by_day,

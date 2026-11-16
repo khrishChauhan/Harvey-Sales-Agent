@@ -328,8 +328,12 @@ def brain_section(brain_config: BrainConfig) -> dict:
     section = {"provider": brain_config.provider}
     if brain_config.model:
         section["model"] = brain_config.model
-    if brain_config.reasoning_effort:
-        section["reasoning_effort"] = brain_config.reasoning_effort
+    if hasattr(brain_config, "endpoint") and brain_config.endpoint:
+        section["endpoint"] = brain_config.endpoint
+    if hasattr(brain_config, "context_length") and brain_config.context_length:
+        section["context_length"] = brain_config.context_length
+    if hasattr(brain_config, "temperature") and brain_config.temperature is not None:
+        section["temperature"] = brain_config.temperature
     return section
 
 
@@ -492,21 +496,10 @@ class Trainer:
         print(f"  Learning from: {base_url}")
         print(f"{'='*60}\n")
 
-        # Step 1: Deep crawl
-        cf_account_id = os.getenv("CLOUDFLARE_ACCOUNT_ID", "")
-        cf_api_token = os.getenv("CLOUDFLARE_API_TOKEN", "")
-
-        if cf_account_id and cf_api_token:
-            print(f"[1/6] Deep crawling with Cloudflare (up to {max_pages} pages)...")
-            crawler = CloudflareCrawler(cf_account_id, cf_api_token)
-            self.scraped_pages = await crawler.crawl(
-                base_url, max_pages=max_pages, depth=10
-            )
-        else:
-            print("[1/6] Crawling website (add CLOUDFLARE_ACCOUNT_ID and")
-            print("      CLOUDFLARE_API_TOKEN to .env for deep JS-rendered crawling)...")
-            crawler = FallbackCrawler()
-            self.scraped_pages = await crawler.crawl(base_url, max_pages=max_pages)
+        # Step 1: Local HTTP/BeautifulSoup crawl (fully local, no cloud rendering dependencies)
+        print(f"[1/6] Crawling website locally with BeautifulSoup (up to {max_pages} pages)...")
+        crawler = FallbackCrawler()
+        self.scraped_pages = await crawler.crawl(base_url, max_pages=max_pages)
 
         if not self.scraped_pages:
             if getattr(crawler, "blocked", False):

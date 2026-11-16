@@ -558,10 +558,29 @@ MIGRATIONS: list[str] = [
     ALTER TABLE conversations ADD COLUMN mailbox_id TEXT DEFAULT '';
     CREATE INDEX IF NOT EXISTS idx_outbox_mailbox_sent ON outbox(mailbox_id, status, sent_at);
     """,
+    # ── v17: local inference telemetry ──
+    """
+    ALTER TABLE usage_log ADD COLUMN ollama_calls INTEGER DEFAULT 0;
+    CREATE TABLE IF NOT EXISTS local_inference_logs (
+        id TEXT PRIMARY KEY,
+        provider TEXT DEFAULT 'ollama',
+        model TEXT NOT NULL,
+        agent TEXT DEFAULT '',
+        task TEXT DEFAULT '',
+        duration_ms INTEGER DEFAULT 0,
+        prompt_tokens INTEGER DEFAULT 0,
+        completion_tokens INTEGER DEFAULT 0,
+        status TEXT DEFAULT 'success',
+        error_message TEXT DEFAULT '',
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_local_inference_created ON local_inference_logs(created_at);
+    CREATE INDEX IF NOT EXISTS idx_local_inference_model ON local_inference_logs(model);
+    """,
 ]
 
-BRAIN_PROVIDERS = ("claude", "codex")
-_USAGE_LOG_COLUMN = {"claude": "claude_calls", "codex": "codex_calls"}
+BRAIN_PROVIDERS = ("ollama", "claude", "codex")
+_USAGE_LOG_COLUMN = {"ollama": "ollama_calls", "claude": "claude_calls", "codex": "codex_calls"}
 
 # When a company was last profiled: the newer of the explicit check stamp
 # (set on every attempt, reachable or not) and its latest profile observation
@@ -2810,3 +2829,40 @@ class StateManager:
             "unprofiled": await self.count_companies_needing_profile(),
         }
 
+
+    async def record_local_inference(
+        self,
+        *,
+        model: str,
+        agent: str = "",
+        task: str = "",
+        duration_ms: int = 0,
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+        status: str = "success",
+        error_message: str = "",
+    ) -> str:
+        """Insert one local inference log row. Never stores sensitive prompt text."""
+        row_id = _new_id()
+        query = """INSERT INTO local_inference_logs
+                   (id, provider, model, agent, task, duration_ms, prompt_tokens,
+                    completion_tokens, status, error_message)
+                   VALUES (?, 'ollama', ?, ?, ?, ?, ?, ?, ?, ?)"""
+        async with self._connect() as db:
+            await db.execute(query, (
+                row_id, model, agent, task, duration_ms, prompt_tokens,
+                completion_tokens, status, error_message
+            ))
+            await db.commit()
+        return row_id
+
+    async def get_local_inference_logs(self, limit: int = 100) -> list[dict]:
+        """Fetch recent local inference logs."""
+        async with self._connect() as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(
+                """SELECT * FROM local_inference_logs ORDER BY created_at DESC LIMIT ?""",
+                (limit,)
+            )
+            rows = await cursor.fetchall()
+            return [dict(r) for r in rows]

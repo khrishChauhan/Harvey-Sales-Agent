@@ -237,8 +237,10 @@ def cmd_status(args):
         print(f"  Active campaigns:     {summary['active_campaigns']}")
         print(f"  Open conversations:   {summary['open_conversations']}")
         by_provider = summary.get("usage_today_by_provider", {})
-        print(f"  Claude calls today:   {by_provider.get('claude', summary['usage_today'])}")
-        print(f"  Codex calls today:    {by_provider.get('codex', 0)}")
+        print(f"  Ollama calls today:   {by_provider.get('ollama', summary['usage_today'])}")
+        if "claude" in by_provider or "codex" in by_provider:
+            print(f"  Claude calls today:   {by_provider.get('claude', 0)}")
+            print(f"  Codex calls today:    {by_provider.get('codex', 0)}")
         from sellbird.config import compliance_notice, load_config, sending_notice
         loaded = None
         try:
@@ -307,6 +309,9 @@ def cmd_status(args):
                     healthy = False
                     print(f"  Brain:                {label} NOT READY")
                     print(f"                        {problem}")
+                elif brain.provider == "ollama":
+                    endpoint = getattr(brain_config, "endpoint", "http://127.0.0.1:11434")
+                    print(f"  Brain:                {label} ready at {endpoint}")
                 elif brain.provider == "codex":
                     print(f"  Brain:                {label} ready (CLI, isolation, login, "
                           "model and account checked; no prompt sent)")
@@ -314,7 +319,7 @@ def cmd_status(args):
                     print(f"  Brain:                {label} CLI isolation flags present "
                           "(login not checked: Claude is checked by its first call)")
         elif brain_status.get("status") == "paused":
-            label = {"claude": "Claude", "codex": "Codex"}.get(brain_status.get("provider"), "Brain")
+            label = {"ollama": "Ollama", "claude": "Claude", "codex": "Codex"}.get(brain_status.get("provider"), "Brain")
             print(f"  Brain:                {label} PAUSED since {brain_status.get('since', '?')}")
             print(f"                        {brain_status.get('reason', '')}")
         print()
@@ -356,10 +361,16 @@ def cmd_usage(args):
         except Exception:
             pass
 
-        label = {"claude": "Claude", "codex": "Codex"}.get(provider, "Brain")
+        label = {"ollama": "Ollama", "claude": "Claude", "codex": "Codex"}.get(provider, "Brain")
         print(f"\n  {label} Usage")
         print("  " + "=" * 52)
-        if windows:
+        if provider == "ollama":
+            endpoint = getattr(brain_config, "endpoint", "http://127.0.0.1:11434")
+            model = getattr(brain_config, "model", "qwen3:4b")
+            print(f"  Endpoint:             {endpoint} (Localhost)")
+            print(f"  Model:                {model}")
+            print("  Subscription Quotas:  None (Fully Local & Unlimited)")
+        elif windows:
             labels = {"five_hour": "5-hour window", "seven_day": "Weekly",
                       "limit_reached": "Usage limit"}
             for key, w in windows.items():
@@ -408,10 +419,28 @@ def cmd_usage(args):
                     f"    {row['task']:<22} {row['calls']:>5} calls  "
                     f"{row['output_tokens']:>10,} out tokens"
                 )
-        print(
-            "\n  Subscription plans aren't billed per token — these are usage"
-            "\n  counts, not costs.\n"
-        )
+        local_logs = await state.get_local_inference_logs(limit=5)
+        if local_logs:
+            print(f"\n  Recent Local Inferences (last {len(local_logs)}):")
+            print(f"  {'Time':<20} {'Agent/Task':<22} {'Duration':>9} {'Tokens (In/Out)':>18} {'Status':<10}")
+            for l in local_logs:
+                time_str = str(l.get("created_at") or "")[:19]
+                agent_task = f"{l.get('agent', '')}/{l.get('task', '')}"[:21]
+                dur = f"{l.get('duration_ms', 0)}ms"
+                tokens = f"{l.get('prompt_tokens', 0)} / {l.get('completion_tokens', 0)}"
+                st = l.get("status", "unknown")
+                print(f"  {time_str:<20} {agent_task:<22} {dur:>9} {tokens:>18} {st:<10}")
+
+        if provider == "ollama":
+            print(
+                "\n  Inference runs 100% locally on your machine via Ollama.\n"
+                "  No external API calls or subscription quotas.\n"
+            )
+        else:
+            print(
+                "\n  Subscription plans aren't billed per token — these are usage"
+                "\n  counts, not costs.\n"
+            )
 
     asyncio.run(_usage())
 

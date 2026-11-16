@@ -40,7 +40,7 @@ _NON_RETRYABLE_PATTERNS = (
 )
 
 
-PROVIDER_LABELS = {"claude": "Claude", "codex": "Codex"}
+PROVIDER_LABELS = {"ollama": "Ollama", "claude": "Claude", "codex": "Codex"}
 
 # Settings key holding the brain's last health transition, for `sellbird
 # status` and the dashboard: {"provider", "status": "ok"|"paused", "reason",
@@ -124,13 +124,24 @@ class Brain:
         self._usage_limited_until = 0.0
         self._usage_pause_recorded = False
         self._status_synced = False
+        if self.transport is None and self.provider == "ollama":
+            from sellbird.ollama_runtime import OllamaTransport
+            self.transport = OllamaTransport(
+                endpoint=getattr(self.config, "endpoint", "http://127.0.0.1:11434"),
+                model=self.model or "qwen3:4b",
+                context_length=getattr(self.config, "context_length", 2048),
+                temperature=getattr(self.config, "temperature", 0.2),
+                state=self.state,
+            )
+
+        self.quota = None
         if self.provider == "codex":
             from sellbird.codex import CodexClient, CodexQuotaClient
             self.codex = CodexClient(
                 model=self.model, reasoning_effort=self.config.reasoning_effort
             )
             self.quota = CodexQuotaClient(self.codex)
-        else:
+        elif self.provider == "claude":
             # Lazy import avoids a cycle (quota -> usage -> state).
             from sellbird.integrations.quota import QuotaClient
             self.quota = QuotaClient()
@@ -166,6 +177,19 @@ class Brain:
         PROVIDER_RECHECK_SECONDS, so a persistent problem doesn't start
         runtimes every heartbeat.
         """
+        if self.transport is not None:
+            preflight_fn = getattr(self.transport, "preflight", None)
+            if callable(preflight_fn):
+                reason = await preflight_fn()
+                if reason:
+                    await self._mark_unavailable(reason)
+                    return reason
+                if self.unavailable:
+                    await self._mark_available()
+                return ""
+            return self.paused_reason
+        if self.provider == "ollama":
+            return self.paused_reason
         if self.provider != "codex":
             return await self._claude_preflight()
         from sellbird.codex import CodexError
@@ -223,6 +247,8 @@ class Brain:
         return ""
 
     def _fingerprint(self):
+        if self.provider == "ollama":
+            return f"ollama:{self.model}"
         if self.provider == "codex":
             return self.codex.fingerprint()
         from sellbird.claude_runtime import fingerprint
@@ -617,7 +643,7 @@ class Brain:
             + "\n\nRespond ONLY with valid JSON. No markdown, no explanation."
         )
         response = await self.think(
-            full_prompt, session_id=session_id, agent=agent, task=task
+            full_prompt, session_id=session_id, expect_json=True, agent=agent, task=task
         )
         self.last_reply_empty = not response
         if not response:
@@ -664,6 +690,11 @@ class Brain:
     async def is_within_budget(
         self, max_daily_calls: int = 200, max_percent: float | None = None
     ) -> bool:
+        if self.paused_reason:
+            return False
+        if self.provider == "ollama":
+            calls = await self.check_usage()
+            return calls < max_daily_calls
         """Check whether Sellbird may spend more of the active subscription.
 
         Preferred signal: the account's REAL utilization windows (Claude's

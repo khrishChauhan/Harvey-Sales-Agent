@@ -696,31 +696,38 @@ class UsageConfig(BaseModel):
         return v
 
 
-BRAIN_PROVIDERS = ("claude", "codex")
+BRAIN_PROVIDERS = ("ollama",)
+PROHIBITED_CLOUD_PROVIDERS = ("claude", "codex", "openai", "anthropic", "gemini")
 CODEX_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
 
-# Model names are passed to a CLI, so they must look like a model name and
+# Model names are passed to Ollama, so they must look like a model name and
 # never like a flag ("-x") or anything a shell would treat specially.
 _MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/\[\]-]{0,127}$")
 
 
 class BrainConfig(BaseModel):
-    """Which subscription Sellbird thinks with.
+    """Local AI inference configuration.
 
-    ``claude`` (default) runs Claude Code headless on your Claude plan.
-    ``codex`` runs Codex on your ChatGPT plan. There is never an automatic
-    fallback between them, and an explicit ``model`` only affects Sellbird —
-    your own Claude Code / Codex settings are never read or changed.
+    Uses Ollama on localhost. Cloud AI providers (Claude, Codex, OpenAI, etc.)
+    are prohibited.
     """
 
-    provider: str = "claude"
-    model: str = ""  # empty = the provider's own default
-    reasoning_effort: str = ""  # codex only; empty = model default
+    provider: str = "ollama"
+    model: str = "qwen3:4b"
+    endpoint: str = "http://127.0.0.1:11434"
+    context_length: int = 2048
+    temperature: float = 0.2
+    reasoning_effort: str = ""  # legacy compatibility only
 
     @field_validator("provider", mode="before")
     @classmethod
     def _valid_provider(cls, v) -> str:
-        v = str(v or "claude").strip().lower()
+        v = str(v or "ollama").strip().lower()
+        if v in PROHIBITED_CLOUD_PROVIDERS:
+            raise ValueError(
+                f"External cloud provider '{v}' is prohibited. "
+                "Only local 'ollama' inference is permitted. Set brain.provider: ollama in sellbird.yaml."
+            )
         if v not in BRAIN_PROVIDERS:
             raise ValueError(
                 f"'{v}' is not a supported brain provider. "
