@@ -151,6 +151,7 @@ Return a JSON array of classified signals (or empty array [] if no relevant sign
                 "is_verified": bool(item.get("is_verified", False)),
                 "source_url": str(item.get("source_url") or "").strip(),
                 "implication": str(item.get("implication") or "").strip()[:300],
+                "classification_source": "local_ai",
             })
 
     if not classified:
@@ -190,6 +191,7 @@ def _heuristic_signal_classification(
                     "is_verified": bool(url),
                     "source_url": url,
                     "implication": f"Identified trigger keyword '{hit}' relevant to sales workflow",
+                    "classification_source": "deterministic_heuristic",
                 })
                 break
 

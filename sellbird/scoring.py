@@ -106,19 +106,23 @@ def score_prospect(
         negative.append("No job title provided (0 points awarded)")
 
     # 3. Deliverability / Email Verification (up to 25 pts)
-    status = (prospect.email_status or "guess").lower()
-    email_pts = EMAIL_SCORES.get(status, 0)
-    score += email_pts
-    breakdown["deliverability"] = email_pts
-    if email_pts == 25:
-        positive.append("Verified email deliverability (+25)")
-    elif email_pts == 12:
-        positive.append("Accept-all/risky email (+12)")
-    elif email_pts == 5:
-        positive.append("Pattern-guessed email (+5)")
-        negative.append("Email unverified, pattern guess only (-20 potential)")
+    if not (prospect.email and prospect.email.strip()):
+        email_pts = 0
+        negative.append("No email address provided (0 deliverability points awarded)")
     else:
-        negative.append("Invalid or missing email address (0 deliverability points)")
+        status = (prospect.email_status or "guess").lower()
+        email_pts = EMAIL_SCORES.get(status, 0)
+        score += email_pts
+        breakdown["deliverability"] = email_pts
+        if email_pts == 25:
+            positive.append("Verified email deliverability (+25)")
+        elif email_pts == 12:
+            positive.append("Accept-all/risky email (+12)")
+        elif email_pts == 5:
+            positive.append("Pattern-guessed email (+5)")
+            negative.append("Email unverified, pattern guess only (-20 potential)")
+        else:
+            negative.append(f"Invalid email address '{prospect.email}' (0 deliverability points)")
 
     # 4. Verified Buying Signals (up to 25 pts)
     hiring_terms = [s.strip().lower() for s in product_context.buying_signals if s.strip()]
@@ -146,6 +150,14 @@ def score_prospect(
         negative.append("No active buying signals observed (0 points awarded)")
 
     # 5. Semantic ICP Alignment Boost (up to 15 pts)
+    # Anti-inflation rule: Semantic similarity must never unfairly inflate weak prospects.
+    # It requires at least one baseline qualification match (sector, role, or verified buying signal).
+    has_baseline_qualification = (
+        breakdown.get("sector", 0) > 0
+        or breakdown.get("decision_maker", 0) > 0
+        or (breakdown.get("buying_signal", 0) > 0 and matched_signal is not None)
+    )
+
     sim = semantic_similarity
     if sim is None and (prospect.title or candidate_ind):
         profile_snippet = f"{prospect.title} at {prospect.company or 'a company'} in {candidate_ind}."
@@ -157,13 +169,29 @@ def score_prospect(
         )
 
     if sim is not None and sim >= 0.65:
-        boost = int(round(sim * MAX_SEMANTIC_BOOST))
-        score += boost
-        breakdown["semantic_similarity"] = boost
-        positive.append(f"Semantic alignment boost: {sim:.2f} cosine similarity (+{boost})")
+        if has_baseline_qualification:
+            raw_boost = int(round(sim * MAX_SEMANTIC_BOOST))
+            # Sensible capping: Total score and breakdown sum must never exceed 100
+            applied_boost = max(0, min(raw_boost, 100 - score))
+            score += applied_boost
+            if applied_boost > 0:
+                breakdown["semantic_similarity"] = applied_boost
+                if applied_boost < raw_boost:
+                    positive.append(
+                        f"Semantic alignment boost: {sim:.2f} cosine similarity "
+                        f"(+{applied_boost}, capped to 100 max total score)"
+                    )
+                else:
+                    positive.append(f"Semantic alignment boost: {sim:.2f} cosine similarity (+{applied_boost})")
+            else:
+                positive.append(f"Semantic alignment verified: {sim:.2f} cosine similarity (score already at 100 cap)")
+        else:
+            negative.append(
+                f"Semantic similarity ({sim:.2f}) not applied: prospect lacks baseline sector, role, or signal qualification"
+            )
 
-    # Final bounded score
-    final_score = max(1, min(100, score))
+    # Final bounded score: strictly bounded between 0 and 100
+    final_score = max(0, min(100, score))
 
     # Confidence calculation
     if email_pts == 25 and matched_signal:

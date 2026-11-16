@@ -33,6 +33,7 @@ class ProblemStatement:
     product_relevance: str = ""
     uncertainties: List[str] = field(default_factory=list)
     summary: str = ""
+    generation_source: str = "local_ai"
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -41,6 +42,7 @@ class ProblemStatement:
             "product_relevance": self.product_relevance,
             "uncertainties": self.uncertainties,
             "summary": self.summary,
+            "generation_source": self.generation_source,
         }
 
     def writer_note(self) -> str:
@@ -166,4 +168,5 @@ def _heuristic_problem_statement(
         product_relevance=relevance,
         uncertainties=uncertainties,
         summary=summary,
+        generation_source="deterministic_heuristic",
     )

@@ -399,3 +399,99 @@ async def test_complete_offline_sales_intelligence_workflow(state):
     assert report.draft_email is not None
     assert report.reply_classification is not None
     assert report.reply_classification["classified_intent"] == "more_info_requested"
+
+
+# ── 10. Audit: Score Bounds, Capping, and Anti-Inflation ──
+
+def test_scoring_bounds_capping_and_anti_inflation(product_context):
+    """Verify that scores are strictly bounded in [0, 100], capped consistently,
+    and semantic similarity never inflates weak/unqualified prospects.
+    """
+    # Case A: Ideal prospect exceeding 100 raw points must be strictly capped at 100
+    p_ideal = Prospect(
+        first_name="Alice",
+        last_name="CISO",
+        title="Chief Information Security Officer",
+        company="FinScale",
+        industry="Fintech",
+        email="alice@finscale.example",
+        email_status="verified",
+    )
+    obs = [{"signal_code": "HIRING_ROLE", "value_text": "Hiring compliance engineers"}]
+
+    res_capped = score_prospect(
+        prospect=p_ideal,
+        product_context=product_context,
+        company_data={"industry": "Fintech"},
+        observations=obs,
+        semantic_similarity=0.95,  # Raw boost would be 14 pts -> 114 total
+    )
+    assert res_capped.total_score == 100
+    assert sum(res_capped.score_breakdown.values()) == 100
+
+    # Case B: Prospect with missing information must receive 0 points (not 1)
+    p_empty = Prospect()
+    res_empty = score_prospect(
+        prospect=p_empty,
+        product_context=product_context,
+        company_data={},
+        observations=[],
+        semantic_similarity=0.0,
+    )
+    assert res_empty.total_score == 0
+    assert res_empty.confidence_level == "low"
+    assert any("No industry information" in n for n in res_empty.negative_factors)
+    assert any("No job title" in n for n in res_empty.negative_factors)
+
+    # Case C: Weak prospect with high semantic similarity must NOT receive semantic boost
+    p_weak = Prospect(
+        first_name="Dan",
+        last_name="Landscaper",
+        title="Botanical Specialist",
+        company="Greenhouse Co",
+        industry="Horticulture",
+        email="dan@greenhouse.example",
+        email_status="guess",
+    )
+    res_weak = score_prospect(
+        prospect=p_weak,
+        product_context=product_context,
+        company_data={"industry": "Horticulture"},
+        observations=[],
+        semantic_similarity=0.90,  # Unfairly high semantic score from ambiguous text
+    )
+    assert res_weak.total_score == 5  # Only the pattern guess deliverability points
+    assert "semantic_similarity" not in res_weak.score_breakdown
+    assert any("Semantic similarity" in n and "not applied" in n for n in res_weak.negative_factors)
+
+
+# ── 11. Audit: AI Inference vs. Deterministic Fallback Distinction ──
+
+@pytest.mark.asyncio
+async def test_ai_vs_deterministic_distinction(state, product_context):
+    """Verify that AI-generated intelligence is explicitly distinguishable from heuristic fallbacks."""
+    # 1. Buying signal distinction
+    ai_json = """[{"signal_type": "HIRING_EXPANSION", "title": "Hiring CISO", "relevance": 0.9, "confidence": 0.9, "evidence": "Careers posting", "is_verified": true}]"""
+    async def ai_transport(p, **kw): return ai_json
+    ai_brain = Brain(state, transport=ai_transport)
+    ev = [{"text": "Hiring CISO for cloud migration", "source_url": "https://example.com"}]
+
+    ai_signals = await classify_buying_signals(ai_brain, product_context, ev)
+    assert ai_signals[0]["classification_source"] == "local_ai"
+
+    # Fallback distinction
+    failing_brain = Brain(state, transport=AsyncMock(side_effect=RuntimeError("Ollama down")))
+    fallback_signals = await classify_buying_signals(failing_brain, product_context, ev)
+    assert fallback_signals[0]["classification_source"] == "deterministic_heuristic"
+
+    # 2. Problem statement distinction
+    p = Prospect(first_name="John", last_name="Doe", title="CISO", company="FinBank")
+    mock_prob_json = """{"business_challenge": "Managing access", "supporting_evidence": ["Careers post"], "product_relevance": "Fits", "uncertainties": ["None"], "summary": "Access issue"}"""
+    async def prob_transport(p, **kw): return mock_prob_json
+    prob_brain = Brain(state, transport=prob_transport)
+
+    ai_prob = await generate_problem_statement(prob_brain, product_context, p, ["Confirmed fact"])
+    assert ai_prob.generation_source == "local_ai"
+
+    fallback_prob = await generate_problem_statement(failing_brain, product_context, p, ["Confirmed fact"])
+    assert fallback_prob.generation_source == "deterministic_heuristic"
